@@ -90,12 +90,12 @@ def main() -> None:
     }
     provenance_path = result_dir / "archive_provenance.json"
     provenance_path.write_text(json.dumps(provenance, indent=2) + "\n")
-    checksum_audit = list(args.download_dir.rglob("staff_checksum_audit.json"))
-    if len(checksum_audit) == 1:
-        (result_dir / "staff_checksum_audit.json").write_bytes(checksum_audit[0].read_bytes())
-    source_lock = list(args.download_dir.rglob("source_revisions.json"))
-    if len(source_lock) == 1:
-        (result_dir / "source_revisions.json").write_bytes(source_lock[0].read_bytes())
+    output_root = args.download_dir / "pa4_outputs"
+    for file in ("staff_checksum_audit.json", "source_revisions.json"):
+        source = output_root / file
+        if not source.is_file():
+            raise RuntimeError(f"Missing required provenance: {source}")
+        (result_dir / file).write_bytes(source.read_bytes())
 
     # Upload only one condition's measured outputs, not original model weights.
     api.upload_folder(
