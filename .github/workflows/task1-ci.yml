@@ -1,0 +1,42 @@
+name: Validate PA4 Task 1 code
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'task1/**'
+      - 'scripts/make_kaggle_kernel.py'
+      - '.github/workflows/task1-ci.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  static-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile Task 1 code and Kaggle generator
+        run: python -m py_compile task1/run.py scripts/make_kaggle_kernel.py
+      - name: Check every configured experiment produces a valid private notebook
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, pathlib, tempfile, subprocess, sys, ast
+          experiments=['dataset-check','baseline','mag25','mag50','mag75',
+                       'wanda25','wanda50','wanda75','adaptive50','adaptive75',
+                       'structured50','int8','int4','int3','awq8','awq4','awq3',
+                       'mixed4','mixed3']
+          for name in experiments:
+              with tempfile.TemporaryDirectory() as d:
+                  subprocess.run([sys.executable,'scripts/make_kaggle_kernel.py',
+                      '--owner','mahnoorwaqas21','--run-id','100-1',
+                      '--sha','1'*40,'--experiment',name,'--output',d],check=True)
+                  metadata=json.loads((pathlib.Path(d)/'kernel-metadata.json').read_text())
+                  nb=json.loads((pathlib.Path(d)/'kernel.ipynb').read_text())
+                  assert metadata['is_private'] is True
+                  assert metadata['enable_gpu']==(name!='dataset-check')
+                  ast.parse(''.join(nb['cells'][0]['source']))
+          print('Validated',len(experiments),'notebook configurations')
+          PY
