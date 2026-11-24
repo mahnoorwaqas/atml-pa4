@@ -5,6 +5,7 @@ on:
     paths:
       - 'task1/**'
       - 'tests/test_task1_protocol.py'
+      - 'tests/test_task1_runner.py'
       - 'scripts/make_kaggle_kernel.py'
       - '.github/workflows/task1-ci.yml'
   workflow_dispatch:
@@ -23,7 +24,7 @@ jobs:
       - name: Install CPU PyTorch for numerical protocol tests
         run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Test Task 1 numerical rules
-        run: python -m unittest discover -s tests -p 'test_task1_protocol.py' -v
+        run: python -m unittest discover -s tests -p 'test_task1_*.py' -v
       - name: Check every configured experiment produces a valid private notebook
         shell: bash
         run: |
