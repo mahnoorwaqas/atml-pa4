@@ -8,7 +8,7 @@ p.add_argument("--output",type=pathlib.Path,required=True)
 a=p.parse_args()
 if not re.fullmatch(r"[0-9a-f]{40}",a.sha):raise ValueError("Full SHA required")
 if not re.fullmatch(r"[a-z0-9_-]+",a.owner):raise ValueError("Invalid username")
-slug="atml-pa4-"+a.run_id
+slug="atml-pa4-"+a.experiment+"-"+a.run_id
 if not re.fullmatch(r"[a-z0-9-]{1,50}",slug):raise ValueError("Invalid slug")
 conditions={"baseline":("baseline",0,0),"mag25":("magnitude",.25,0),
 "mag50":("magnitude",.5,0),"mag75":("magnitude",.75,0),
