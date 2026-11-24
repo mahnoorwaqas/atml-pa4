@@ -92,6 +92,27 @@ def main():
                                           load(y/'hellaswag_examples.json'),'acc'),
             'hellaswag_char_norm':bootstrap_hs(load(x/'hellaswag_examples.json'),
                                                 load(y/'hellaswag_examples.json'),'acc_norm')}
+    # Preserve a paired qualitative panel of predeclared earliest manifest examples.
+    baseline_cases=load(runs['baseline']/'hellaswag_examples.json')
+    sample_ids=sorted(int(x['order']) for x in baseline_cases)[:8]
+    qualitative=[]
+    for example_id in sample_ids:
+        row={'order':example_id,'conditions':{}}
+        for name,path in sorted(runs.items()):
+            cases={int(x['order']):x for x in load(path/'hellaswag_examples.json')}
+            if example_id not in cases:continue
+            case=cases[example_id]
+            row.setdefault('source_row',case.get('id'))
+            row.setdefault('label',case['label'])
+            if case.get('context') and not row.get('context'):
+                row['context']=case['context']
+                row['endings']=case.get('endings')
+            row['conditions'][name]={'scores':case['scores'],
+                 'prediction':int(np.argmax(case['scores'])),'correct':case['acc'],
+                 'normalized_scores':case['normalized_scores']}
+        qualitative.append(row)
+    (args.out/'qualitative_examples.json').write_text(
+         json.dumps(qualitative,indent=2)+'\\n')
     with (args.out/'summary.csv').open('w',newline='') as f:
         w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
     (args.out/'paired_bootstrap.json').write_text(json.dumps(paired,indent=2)+'\n')
@@ -102,5 +123,12 @@ def main():
         if 'per_projection' in data:
             (args.out/f'{name}_projection_map.json').write_text(
                 json.dumps(data['per_projection'],indent=2)+'\n')
+        diagnostic={k:data[k] for k in
+            ('allocation_zeros','sensitivity_probe','calibration_bit_errors',
+             'bits_by_projection','eligible_q2_budget_bytes','eligible_q3_bytes')
+            if k in data}
+        if diagnostic:
+            (args.out/f'{name}_sensitivity_allocation.json').write_text(
+                json.dumps(diagnostic,indent=2)+'\n')
     print(json.dumps({'conditions':list(runs),'paired_comparisons':list(paired),'output':str(args.out)}))
 if __name__=='__main__':main()
