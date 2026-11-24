@@ -253,13 +253,13 @@ def main():
                                  "tokenizer":tokenizer.name_or_path})
     t_start=time.perf_counter()
     with torch.inference_mode():
-        stats=None
-        if a.method in ("wanda","structured","nonuniform","awq","mixed"):
-            stats=Stats(model)
-            for window in records(paths["cal"]):
-                ids=torch.tensor(window["token_ids"],device=dev)[None,:]
-                model(ids,use_cache=False)
-            stats.close()
+        # The same 128 fixed windows are required for every diagnostic, including
+        # baseline and magnitude/PTQ output-error comparisons.
+        stats=Stats(model)
+        for window in records(paths["cal"]):
+            ids=torch.tensor(window["token_ids"],device=dev)[None,:]
+            model(ids,use_cache=False)
+        stats.close()
         t_calibration=time.perf_counter()
         calibration_norms=stats.norms() if stats else {}
         calibration_mse=stats.squares() if stats else {}
