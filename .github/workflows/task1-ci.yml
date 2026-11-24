@@ -38,9 +38,16 @@ jobs:
                        'mixed4','mixed3']
           for name in experiments:
               with tempfile.TemporaryDirectory() as d:
-                  subprocess.run([sys.executable,'scripts/make_kaggle_kernel.py',
+                  lock=pathlib.Path(d)/'lock.json'
+                  lock.write_text(json.dumps({'revisions':{
+                    k:'a'*40 for k in ('c4','wikitext','hellaswag','gsm8k',
+                    'model_base','model_target','model_draft')}}))
+                  argv=[sys.executable,'scripts/make_kaggle_kernel.py',
                       '--owner','mahnoorwaqas21','--run-id','100-1',
-                      '--sha','1'*40,'--experiment',name,'--output',d],check=True)
+                      '--sha','1'*40,'--experiment',name,'--output',d]
+                  if name not in ('baseline','dataset-check'):
+                      argv.extend(['--source-lock',str(lock)])
+                  subprocess.run(argv,check=True)
                   metadata=json.loads((pathlib.Path(d)/'kernel-metadata.json').read_text())
                   nb=json.loads((pathlib.Path(d)/'kernel.ipynb').read_text())
                   assert metadata['is_private'] is True
