@@ -5,6 +5,7 @@ p=argparse.ArgumentParser()
 p.add_argument("--owner",required=True);p.add_argument("--run-id",required=True)
 p.add_argument("--experiment",required=True);p.add_argument("--sha",required=True)
 p.add_argument("--output",type=pathlib.Path,required=True)
+p.add_argument("--source-lock",type=pathlib.Path,default=None)
 a=p.parse_args()
 if not re.fullmatch(r"[0-9a-f]{40}",a.sha):raise ValueError("Full SHA required")
 if not re.fullmatch(r"[a-z0-9_-]+",a.owner):raise ValueError("Invalid username")
@@ -24,7 +25,10 @@ meta={"id":a.owner+"/"+slug,"title":"ATML PA4 "+a.experiment+" "+a.run_id,
 "code_file":"kernel.ipynb","language":"python","kernel_type":"notebook",
 "is_private":True,"enable_gpu":a.experiment!="dataset-check",
 "enable_internet":True,"dataset_sources":[],"competition_sources":[],"kernel_sources":[]}
-config={"experiment":a.experiment,"sha":a.sha,"condition":conditions.get(a.experiment)}
+config={"experiment":a.experiment,"sha":a.sha,"condition":conditions.get(a.experiment),
+        "source_lock":json.loads(a.source_lock.read_text()) if a.source_lock else None}
+if a.experiment!="dataset-check" and a.source_lock is None:
+    raise ValueError("A baseline source-revision lock is mandatory for comparable runs")
 code="""
 import json,pathlib,subprocess,sys,time,traceback,shutil
 cfg=json.loads(CONFIG)
@@ -48,6 +52,9 @@ try:
     if cfg['experiment']=='dataset-check':
         run([sys.executable,'-m','unittest','discover','-s','tests','-v'],staff)
     else:
+        if cfg.get('source_lock'):
+            (staff/'data/local_source_revisions.json').write_text(
+                json.dumps(cfg['source_lock'],indent=2)+'\\n')
         run([sys.executable,'-m','pip','install','--quiet',
              'transformers==4.57.1','huggingface_hub==0.36.2',
              'datasets','accelerate','safetensors','sentencepiece'])
