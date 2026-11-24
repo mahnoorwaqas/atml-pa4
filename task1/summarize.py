@@ -53,11 +53,16 @@ def main():
     if ambiguous:raise RuntimeError(f'Ambiguous duplicate run names: {ambiguous}')
     runs={k:v[0] for k,v in groups.items()}
     if 'baseline' not in runs:raise RuntimeError('Missing FP16 baseline')
-    baseline_hash=load(runs['baseline']/'inputs.json')
+    baseline_lock=load(runs['baseline']/'source_revisions.json')
+    baseline_ids=load(runs['baseline']/'data_selection.json')
     rows=[];paired={}
     for name,dir in sorted(runs.items()):
-        if load(dir/'inputs.json')!=baseline_hash:
-            raise RuntimeError('Staff token windows differ from baseline: '+name)
+        # Gzip metadata includes creation-time bytes: binary .gz hashes need
+        # not match even if the *decompressed* locked windows are identical.
+        if load(dir/'source_revisions.json')!=baseline_lock:
+            raise RuntimeError('Upstream source-revision mismatch: '+name)
+        if load(dir/'data_selection.json')!=baseline_ids:
+            raise RuntimeError('Staff calibration/diagnostic row IDs mismatch: '+name)
         wiki=load(dir/'wiki_summary.json');c4=load(dir/'c4_summary.json')
         hs=load(dir/'hellaswag_summary.json');comp=load(dir/'compression.json')
         costs=load(dir/'costs.json')
