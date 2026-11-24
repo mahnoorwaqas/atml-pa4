@@ -1,0 +1,43 @@
+name: Check current Task 1 baseline on Kaggle
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/task1-status.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+    steps:
+      - name: Fetch Kaggle status and print current run manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q kaggle six
+          kernel="mahnoorwaqas21/atml-pa4-baseline-45344759542-1"
+          echo "Notebook reference: $kernel"
+          kaggle kernels status "$kernel" || true
+          mkdir -p kaggle_status
+          kaggle kernels output "$kernel" -p kaggle_status || true
+          if [[ -f kaggle_status/pa4_outputs/run_manifest.json ]]; then
+            echo "=== Current run manifest ==="
+            cat kaggle_status/pa4_outputs/run_manifest.json
+          fi
+          if [[ -f kaggle_status/atml-pa4-baseline-45344759542-1.log ]]; then
+            echo "=== Notebook log tail ==="
+            tail -c 9000 kaggle_status/atml-pa4-baseline-45344759542-1.log
+          fi
+      - name: Save diagnostic outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task1-baseline-health
+          path: |
+            kaggle_status/pa4_outputs/run_manifest.json
+            kaggle_status/atml-pa4-baseline-45344759542-1.log
+          if-no-files-found: warn
+          retention-days: 30
