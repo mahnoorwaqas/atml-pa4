@@ -56,6 +56,13 @@ jobs:
           kaggle kernels status mahnoorwaqas21/atml-pa4-baseline-45340451212-1 || true
           kaggle kernels output mahnoorwaqas21/atml-pa4-baseline-45340451212-1 -p recovered_kaggle_results || true
           find recovered_kaggle_results -type f -printf '%p %s bytes\n' | head -40
+      - name: Show recovered Kaggle error details
+        shell: bash
+        run: |
+          echo "===== Kaggle notebook traceback ====="
+          tail -n 90 recovered_kaggle_results/atml-pa4-baseline-45340451212-1.log || true
+          echo "===== Run manifest ====="
+          cat recovered_kaggle_results/pa4_outputs/run_manifest.json || true
       - name: Archive recovered outputs for review
         uses: actions/upload-artifact@v4
         if: always()
