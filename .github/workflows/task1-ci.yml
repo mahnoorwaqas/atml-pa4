@@ -6,6 +6,7 @@ on:
       - 'task1/**'
       - 'tests/test_task1_protocol.py'
       - 'tests/test_task1_runner.py'
+      - 'tests/test_task1_summary.py'
       - 'scripts/make_kaggle_kernel.py'
       - '.github/workflows/task1-ci.yml'
   workflow_dispatch:
@@ -20,7 +21,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Compile Task 1 code and Kaggle generator
-        run: python -m py_compile task1/run.py scripts/make_kaggle_kernel.py
+        run: python -m py_compile task1/run.py task1/protocol.py task1/summarize.py task1/figures.py scripts/make_kaggle_kernel.py scripts/audit_staff.py scripts/archive_to_hf.py scripts/collect_task1_results.py scripts/fetch_baseline_lock.py
       - name: Install CPU PyTorch for numerical protocol tests
         run: |
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
