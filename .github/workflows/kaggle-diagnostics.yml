@@ -47,3 +47,20 @@ jobs:
           except Exception as exc:
               print("suspected kernel lookup FAILED:", type(exc).__name__, str(exc)[:500])
           PY
+
+      - name: Check actual Kaggle notebook status and retrieve available outputs
+        shell: bash
+        run: |
+          mkdir -p recovered_kaggle_results
+          echo 'Actual notebook: mahnoorwaqas21/atml-pa4-baseline-45340451212-1'
+          kaggle kernels status mahnoorwaqas21/atml-pa4-baseline-45340451212-1 || true
+          kaggle kernels output mahnoorwaqas21/atml-pa4-baseline-45340451212-1 -p recovered_kaggle_results || true
+          find recovered_kaggle_results -type f -printf '%p %s bytes\n' | head -40
+      - name: Archive recovered outputs for review
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recovered-baseline-45340451212
+          path: recovered_kaggle_results/
+          if-no-files-found: warn
+          retention-days: 30
