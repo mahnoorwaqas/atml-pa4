@@ -36,6 +36,7 @@ def find_completed_run(root: Path, experiment: str) -> tuple[Path, Path]:
         "hellaswag_summary.json", "hellaswag_examples.json",
         "wiki_windows.json", "c4_windows.json", "timing.json",
         "development_summary.json", "dev_windows.json", "protocol.json", "costs.json",
+        "data_selection.json",
     ]
     missing = [item for item in required if not (condition_dir / item).is_file()]
     if missing:
