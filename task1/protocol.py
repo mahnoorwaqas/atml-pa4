@@ -15,7 +15,10 @@ def quantize(w,bits,group=128):
     rows,cols=w.shape; chunks=[]
     for i in range(0,cols,group):
         a=w[:,i:i+group].float()
-        mn=a.amin(1,keepdim=True);mx=a.amax(1,keepdim=True)
+        # Include zero so an integer zero-point is representable without clipping
+        # an all-positive or all-negative group.
+        mn=a.amin(1,keepdim=True).minimum(torch.zeros_like(a[:,:1]))
+        mx=a.amax(1,keepdim=True).maximum(torch.zeros_like(a[:,:1]))
         s=((mx-mn)/(2**bits-1)).clamp_min(1e-12)
         z=torch.round(-mn/s).clamp(0,2**bits-1)
         q=torch.round(a/s+z).clamp(0,2**bits-1)
