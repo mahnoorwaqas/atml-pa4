@@ -26,11 +26,11 @@ def modules(m):
 def logprobs(m,ids):
     with torch.inference_mode():
         return m(input_ids=ids,use_cache=False).logits[0,:-1].float()
-def perplexity(m,windows,device,outfile):
+def perplexity(m,windows,device,outfile,expected_tokens=50000):
     n=0;loss=0.;rows=[]
     for i,w in enumerate(windows):
         x=torch.tensor(w["token_ids"],device=device,dtype=torch.long)[None,:]
-        lo,hi=w["score_target_offsets"]
+        lo,hi=w.get("score_target_offsets",[1,x.shape[1]])
         assert 1<=lo<hi<=x.shape[1]
         logits=logprobs(m,x)
         target=x[0,1:]; scores=F.cross_entropy(logits,target,reduction="none")
@@ -38,7 +38,8 @@ def perplexity(m,windows,device,outfile):
         item={"id":i,"source_row":w.get("source_row"),"token_offset":w.get("token_offset"),
               "tokens":len(vals),"nll_sum":float(vals.sum())}
         rows.append(item);n+=len(vals);loss+=item["nll_sum"]
-    assert n==50000,(n,len(rows))
+    if expected_tokens is not None and n!=expected_tokens:
+        raise AssertionError(f"Unexpected token count {n} vs {expected_tokens}")
     dump(outfile,rows)
     return {"tokens":n,"mean_nll":loss/n,"ppl":math.exp(loss/n),"windows":len(rows)}
 def hs_preprocess(text):
@@ -281,6 +282,9 @@ def main():
          "development_count":32,"group_size":128,"attention_backend":"sdpa",
          "quantization":"asymmetric affine with nearest-even group rounding",
          "score_convention":"conditional log likelihood and characters for HellaSwag acc_norm"})
+    development=perplexity(model,records(paths["dev"]),dev,
+                           out/"dev_windows.json",expected_tokens=32*511)
+    dump(out/"development_summary.json",development)
     for key in ("wiki","c4"):
         result=perplexity(model,records(paths[key]),dev,out/f"{key}_windows.json")
         dump(out/f"{key}_summary.json",result)
