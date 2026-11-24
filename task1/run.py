@@ -83,10 +83,12 @@ def hellaswag(m,examples,tok,device,outfile,limit=2000):
             "acc_norm":float(np.mean([r["acc_norm"] for r in rows]))}
 class Stats:
     def __init__(self,model):
-        self.stats={};self.handles=[]
+        self.stats={};self.samples={};self.handles=[]
         for name,layer in modules(model).items():
             def f(module,args,name=name):
                 x=args[0].detach().float().reshape(-1,module.in_features)
+                if name not in self.samples:
+                    self.samples[name]=x[:64].to(torch.float16).cpu()
                 sq=x.square().sum(0).cpu();ab=x.abs().sum(0).cpu()
                 if name not in self.stats:self.stats[name]=[sq,ab,x.shape[0]]
                 else:
@@ -97,7 +99,7 @@ class Stats:
     def norms(self):return {k:v[0].sqrt() for k,v in self.stats.items()}
     def means(self):return {k:v[1]/v[2] for k,v in self.stats.items()}
     def squares(self):return {k:v[0]/v[2] for k,v in self.stats.items()}
-def apply(m,method,sparsity,bits,norms,feature_sq):
+def apply(m,method,sparsity,bits,norms,feature_sq,samples):
     """Apply one condition, using calibration-only, matched-budget choices."""
     mods=modules(m)
     required=getattr(m.config,"num_hidden_layers",None)
@@ -176,6 +178,9 @@ def apply(m,method,sparsity,bits,norms,feature_sq):
                 "eligible_weights":w.numel(),"zero_weights":measured_zeros,
                 "score_p10_p50_p90":q,
                 "calibration_output_mse_proxy":proto.mse(initial,w,feature_sq[name]),
+                "calibration_output_mse_sampled":float(F.linear(samples[name].to(w.device).float(),
+                         initial.float()-w.float()).square().mean()),
+                "sampled_calibration_rows":len(samples[name]),
                 "l2_weight_delta":float((initial.float()-w.float()).square().sum().sqrt())})
             del initial
     if method in ("magnitude","wanda","nonuniform","structured"):
@@ -209,13 +214,15 @@ def bench(m,tok,device,out):
     tokens=torch.randint(0,len(tok),(1,512),device=device)
     with torch.inference_mode():
         for _ in range(3):
-            cache=m(tokens,use_cache=True).past_key_values
-            m(tokens[:,-1:],past_key_values=cache,use_cache=True)
+            prefill=m(tokens,use_cache=True)
+            cache=prefill.past_key_values
+            m(prefill.logits[:,-1:].argmax(-1),past_key_values=cache,use_cache=True)
         torch.cuda.synchronize()
         times=[]
         for _ in range(5):
-            cache=m(tokens,use_cache=True).past_key_values
-            next_id=tokens[:,-1:]
+            prefill=m(tokens,use_cache=True)
+            cache=prefill.past_key_values
+            next_id=prefill.logits[:,-1:].argmax(-1)
             torch.cuda.synchronize();t0=time.perf_counter()
             for _ in range(64):
                 output=m(next_id,past_key_values=cache,use_cache=True)
@@ -246,10 +253,12 @@ def main():
     dump(out/"environment.json",{"torch":torch.__version__,"transformers":transformers.__version__,
          "cuda":torch.version.cuda,"gpu":torch.cuda.get_device_name(0),"seed":6304})
     dev=torch.device("cuda")
-    tokenizer=AutoTokenizer.from_pretrained(MODEL,use_fast=True)
-    model=AutoModelForCausalLM.from_pretrained(MODEL,torch_dtype=torch.float16,
+    lock=json.loads((pathlib.Path(a.data)/"data/local_source_revisions.json").read_text())
+    revision=lock["revisions"]["model_base"]
+    tokenizer=AutoTokenizer.from_pretrained(MODEL,revision=revision,use_fast=True)
+    model=AutoModelForCausalLM.from_pretrained(MODEL,revision=revision,torch_dtype=torch.float16,
                                               attn_implementation="sdpa").to(dev).eval()
-    dump(out/"checkpoint.json",{"name":MODEL,"revision":model.config._commit_hash,
+    dump(out/"checkpoint.json",{"name":MODEL,"revision":revision,
                                  "tokenizer":tokenizer.name_or_path})
     t_start=time.perf_counter()
     with torch.inference_mode():
@@ -264,7 +273,7 @@ def main():
         calibration_norms=stats.norms() if stats else {}
         calibration_mse=stats.squares() if stats else {}
         compression=apply(model,a.method,a.sparsity,a.bits,
-                          calibration_norms,calibration_mse)
+                          calibration_norms,calibration_mse,stats.samples)
     dump(out/"costs.json",{"calibration_seconds":t_calibration-t_start,
                            "compression_seconds":time.perf_counter()-t_calibration})
     dump(out/"compression.json",compression)
