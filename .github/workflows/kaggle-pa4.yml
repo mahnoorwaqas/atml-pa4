@@ -1,8 +1,5 @@
 name: Run PA4 Task 1 on Kaggle
 on:
-  push:
-    branches: [main]
-    paths: [.github/workflows/kaggle-pa4.yml]
   workflow_dispatch:
     inputs:
       experiment:
@@ -89,6 +86,18 @@ jobs:
         run: |
           mkdir -p kaggle_results
           kaggle kernels output "$KAGGLE_USERNAME/atml-pa4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p kaggle_results || true
+      - name: Archive completed results privately on Hugging Face
+        if: success() && env.EXPERIMENT != 'dataset-check'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install "huggingface_hub==0.36.2"
+          python scripts/archive_to_hf.py \
+            --download-dir kaggle_results \
+            --experiment "$EXPERIMENT" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --github-sha "$GITHUB_SHA"
       - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4
