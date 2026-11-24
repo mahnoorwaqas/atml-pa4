@@ -1,0 +1,13 @@
+__pycache__/
+.pytest_cache/
+.env
+.kaggle/
+kaggle_submission/
+kaggle_results/
+results/
+checkpoints/
+data/public_locked/
+data/prefix_banks/
+*.safetensors
+*.pt
+*.pth
