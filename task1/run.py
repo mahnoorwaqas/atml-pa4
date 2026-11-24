@@ -248,6 +248,19 @@ def main():
         "c4":"c4_validation_windows_locked.jsonl.gz","hs":"hellaswag_val_locked.jsonl.gz"}.items()}
     for k,v in paths.items():
         if not v.is_file():raise FileNotFoundError(f"{k}: {v}")
+    calibration=records(paths["cal"]);development=records(paths["dev"])
+    if len(calibration)!=128 or len(development)!=32:
+        raise RuntimeError("Expected 128 calibration and 32 development windows")
+    if any(len(x["token_ids"])!=512 for x in calibration+development):
+        raise RuntimeError("C4 calibration/development windows must have length 512")
+    cal_ids={(x["source_row"],x.get("token_offset",0)) for x in calibration}
+    dev_ids={(x["source_row"],x.get("token_offset",0)) for x in development}
+    if len(cal_ids)!=128 or len(dev_ids)!=32 or (cal_ids & dev_ids):
+        raise RuntimeError("Calibration/development windows are not disjoint")
+    dump(out/"data_selection.json",{
+        "calibration_ids":sorted([list(v) for v in cal_ids]),
+        "development_ids":sorted([list(v) for v in dev_ids]),
+        "hellaswag_source_ids":[x["source_row_index"] for x in records(paths["hs"])]})
     dump(out/"config.json",vars(a))
     dump(out/"inputs.json",{k:digest(v) for k,v in paths.items()})
     import transformers
@@ -266,7 +279,7 @@ def main():
         # The same 128 fixed windows are required for every diagnostic, including
         # baseline and magnitude/PTQ output-error comparisons.
         stats=Stats(model)
-        for window in records(paths["cal"]):
+        for window in calibration:
             ids=torch.tensor(window["token_ids"],device=dev)[None,:]
             model(ids,use_cache=False)
         stats.close()
@@ -282,7 +295,7 @@ def main():
          "development_count":32,"group_size":128,"attention_backend":"sdpa",
          "quantization":"asymmetric affine with nearest-even group rounding",
          "score_convention":"conditional log likelihood and characters for HellaSwag acc_norm"})
-    development=perplexity(model,records(paths["dev"]),dev,
+    development=perplexity(model,development,dev,
                            out/"dev_windows.json",expected_tokens=32*511)
     dump(out/"development_summary.json",development)
     for key in ("wiki","c4"):
