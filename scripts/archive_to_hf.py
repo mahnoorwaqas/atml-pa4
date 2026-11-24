@@ -35,6 +35,7 @@ def find_completed_run(root: Path, experiment: str) -> tuple[Path, Path]:
         "compression.json", "wiki_summary.json", "c4_summary.json",
         "hellaswag_summary.json", "hellaswag_examples.json",
         "wiki_windows.json", "c4_windows.json", "timing.json",
+        "development_summary.json", "dev_windows.json", "protocol.json", "costs.json",
     ]
     missing = [item for item in required if not (condition_dir / item).is_file()]
     if missing:
@@ -88,6 +89,9 @@ def main() -> None:
     }
     provenance_path = result_dir / "archive_provenance.json"
     provenance_path.write_text(json.dumps(provenance, indent=2) + "\n")
+    checksum_audit = list(args.download_dir.rglob("staff_checksum_audit.json"))
+    if len(checksum_audit) == 1:
+        (result_dir / "staff_checksum_audit.json").write_bytes(checksum_audit[0].read_bytes())
     source_lock = list(args.download_dir.rglob("source_revisions.json"))
     if len(source_lock) == 1:
         (result_dir / "source_revisions.json").write_bytes(source_lock[0].read_bytes())
