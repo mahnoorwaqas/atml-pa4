@@ -20,6 +20,7 @@ jobs:
           python -m pip install -q kaggle six
           kernel="mahnoorwaqas21/atml-pa4-baseline-45344759542-1"
           echo "Notebook reference: $kernel"
+          echo "Checking current Kaggle worker state and any newly produced outputs"
           kaggle kernels status "$kernel" || true
           mkdir -p kaggle_status
           kaggle kernels output "$kernel" -p kaggle_status || true
