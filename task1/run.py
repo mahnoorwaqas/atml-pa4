@@ -1,7 +1,7 @@
 """Task 1 runner (dense FP16 execution, estimated packed storage).
 Staff public dataset generator remains authoritative; no test-driven allocation.
 """
-import argparse, gzip, hashlib, json, math, os, pathlib, random, time
+import argparse, gzip, hashlib, json, math, os, pathlib, random, time, re
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -40,10 +40,12 @@ def perplexity(m,windows,device,outfile):
     assert n==50000,(n,len(rows))
     dump(outfile,rows)
     return {"tokens":n,"mean_nll":loss/n,"ppl":math.exp(loss/n),"windows":len(rows)}
+def hs_preprocess(text):
+    text=text.strip().replace(" [title]",". ")
+    return re.sub(r"\\[.*?\\]", "", text)
 def hs_prompt(ex):
-    a=ex["ctx_a"].strip()
-    b=ex["ctx_b"].strip()
-    return a+" "+(b[:1].upper()+b[1:] if b else "")
+    ctx=ex["ctx_a"]+" "+ex["ctx_b"].capitalize()
+    return hs_preprocess(ex["activity_label"]+": "+ctx)
 def hellaswag(m,examples,tok,device,outfile,limit=2000):
     rows=[]
     for i,rec in enumerate(examples[:limit]):
@@ -51,13 +53,14 @@ def hellaswag(m,examples,tok,device,outfile,limit=2000):
         beginnings=tok.encode(text,add_special_tokens=False)
         if not beginnings: raise ValueError("Empty HellaSwag prompt")
         scores=[]
-        for ending in ex["endings"]:
-            # Tokenize prompt and its continuation together to respect boundary merges.
-            combined=tok.encode(text+ending,add_special_tokens=False)
+        choices=[hs_preprocess(e) for e in ex["endings"]]
+        for ending in choices:
+            # Harness uses a leading space (default target_delimiter).
+            combined=tok.encode(text+" "+ending,add_special_tokens=False)
             plen=len(beginnings)
             if combined[:plen]!=beginnings:
                 # Explicit separate tokenization convention is fixed for every model.
-                cont=tok.encode(ending,add_special_tokens=False)
+                cont=tok.encode(" "+ending,add_special_tokens=False)
                 combined=beginnings+cont
             else:cont=combined[plen:]
             if not cont:raise ValueError("Empty HellaSwag ending")
@@ -68,7 +71,7 @@ def hellaswag(m,examples,tok,device,outfile,limit=2000):
                 logits=m(ids,use_cache=False).logits[0,plen-1:-1].float()
                 val=F.log_softmax(logits,dim=-1).gather(1,torch.tensor(cont,device=device)[:,None]).sum()
             scores.append(float(val))
-        normalized=[v/max(1,len(e)) for v,e in zip(scores,ex["endings"])]
+        normalized=[v/max(1,len(e)) for v,e in zip(scores,choices)]
         label=int(ex["label"])
         rows.append({"id":rec["source_row_index"],"order":rec["order"],"label":label,
                      "scores":scores,"acc":int(np.argmax(scores)==label),
@@ -140,9 +143,13 @@ def apply(m,method,sparsity,bits,norms,means):
             # Deterministic calibration-only bit-gain selection; Q2 INT3/INT4 packed budget.
             choices={};options={};budget=0;used=0
             for name,l in mods.items():
-                options[name]={b:awq(l.weight,means[name],b,True) for b in (2,3,4,8)}
-                budget+=options[name][bits][2]
-                choices[name]=2;used+=options[name][2][2]
+                options[name]={}
+                for b in (2,3,4,8):
+                    err,reconstructed,nbytes,alpha=awq(l.weight,means[name],b,True)
+                    options[name][b]=(err,nbytes,alpha)
+                    del reconstructed
+                budget+=options[name][bits][1]
+                choices[name]=2;used+=options[name][2][1]
             if used>budget:raise ValueError("Mixed budget infeasible")
             while True:
                 best=None
@@ -150,7 +157,7 @@ def apply(m,method,sparsity,bits,norms,means):
                     old=choices[name];new={2:3,3:4,4:8,8:None}[old]
                     if new is None:continue
                     before=options[name][old];after=options[name][new]
-                    cost=after[2]-before[2];gain=max(0.,before[0]-after[0])
+                    cost=after[1]-before[1];gain=max(0.,before[0]-after[0])
                     if used+cost<=budget and gain>0:
                         candidate=(gain/max(cost,1),name,new,cost)
                         if best is None or candidate>best:best=candidate
@@ -205,6 +212,25 @@ def bench(m,tok,device,out):
                 m(ids,use_cache=True);torch.cuda.synchronize()
                 times.append(1000*(time.perf_counter()-t))
         result[str(size)]={"prefill_ms":times,"peak_allocated_bytes":torch.cuda.max_memory_allocated()}
+    # Decode latency: 64 greedy cached steps following a fixed 512-token prefill.
+    tokens=torch.randint(0,len(tok),(1,512),device=device)
+    with torch.inference_mode():
+        for _ in range(3):
+            cache=m(tokens,use_cache=True).past_key_values
+            m(tokens[:,-1:],past_key_values=cache,use_cache=True)
+        torch.cuda.synchronize()
+        times=[]
+        for _ in range(5):
+            cache=m(tokens,use_cache=True).past_key_values
+            next_id=tokens[:,-1:]
+            torch.cuda.synchronize();t0=time.perf_counter()
+            for _ in range(64):
+                output=m(next_id,past_key_values=cache,use_cache=True)
+                cache=output.past_key_values
+                next_id=output.logits[:,-1:].argmax(-1)
+            torch.cuda.synchronize()
+            times.append(1000*(time.perf_counter()-t0))
+    result["decode_64_tokens"]={"latency_ms":times,"repetitions":5}
     dump(out,result)
 def main():
     p=argparse.ArgumentParser()
