@@ -19,8 +19,9 @@ def quantize(w,bits,group=128):
         # an all-positive or all-negative group.
         mn=a.amin(1,keepdim=True).minimum(torch.zeros_like(a[:,:1]))
         mx=a.amax(1,keepdim=True).maximum(torch.zeros_like(a[:,:1]))
-        s=((mx-mn)/(2**bits-1)).clamp_min(1e-12)
-        z=torch.round(-mn/s).clamp(0,2**bits-1)
+        # Quantize scales to FP16 *before* reconstruction; this matches storage.
+        s=((mx-mn)/(2**bits-1)).clamp_min(2**-24).half().float()
+        z=torch.round(-mn/s).clamp(0,2**bits-1).to(torch.int16).float()
         q=torch.round(a/s+z).clamp(0,2**bits-1)
         chunks.append(((q-z)*s).to(w.dtype))
     return torch.cat(chunks,dim=1),payload_bytes(rows,cols,bits,group)
@@ -104,3 +105,20 @@ def unique_param_count(model,eligible_suffixes):
             eligible+=p.numel()
         else:other_bytes+=p.numel()*p.element_size()
     return eligible,other_bytes
+
+def pack_group_codes(codes,bits):
+    """Reference little-endian bitstream, padded to a byte at each group boundary."""
+    if bits not in BITS:raise ValueError('bits')
+    v=[int(x) for x in codes]
+    if any(x<0 or x>=2**bits for x in v):raise ValueError('code range')
+    payload=bytearray(math.ceil(len(v)*bits/8))
+    for index,x in enumerate(v):
+        offset=index*bits
+        for bit in range(bits):
+            if x & (1<<bit):payload[(offset+bit)//8]|=1<<((offset+bit)%8)
+    return bytes(payload)
+
+def unpack_group_codes(data,bits,count):
+    if len(data)!=math.ceil(count*bits/8):raise ValueError('payload length')
+    return [sum((((data[(index*bits+b)//8]>>((index*bits+b)%8))&1)<<b)
+                for b in range(bits)) for index in range(count)]
