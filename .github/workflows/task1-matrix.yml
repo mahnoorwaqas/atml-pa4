@@ -35,6 +35,8 @@ jobs:
           - mixed4
           - mixed3
     env:
+      BASELINE_RUN_ID: ${{ github.event.workflow_run.id || '45344759542' }}
+      BASELINE_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '1' }}
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: mahnoorwaqas21
       EXPERIMENT: ${{ matrix.experiment }}
@@ -50,6 +52,15 @@ jobs:
           python -m py_compile task1/run.py scripts/make_kaggle_kernel.py
       - name: Install Kaggle CLI
         run: python -m pip install kaggle six
+      - name: Reuse baseline's immutable public dataset and model revisions
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install "huggingface_hub==0.36.2"
+          python scripts/fetch_baseline_lock.py \
+            --run-id "$BASELINE_RUN_ID" \
+            --attempt "$BASELINE_ATTEMPT" \
+            --output source_revisions.json
       - name: Make private GPU notebook
         shell: bash
         run: |
@@ -57,6 +68,7 @@ jobs:
             --owner "$KAGGLE_USERNAME" \
             --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --experiment "$EXPERIMENT" --sha "$GITHUB_SHA" \
+            --source-lock source_revisions.json \
             --output kaggle_submission
       - name: Submit condition
         run: kaggle kernels push -p kaggle_submission
