@@ -66,6 +66,10 @@ jobs:
             status="$(kaggle kernels status "$kernel" 2>&1 || true)"
             echo "${EXPERIMENT}: $status"
             u="${status^^}"
+            if [[ "$u" == *"PERMISSION"* || "$u" == *"CANNOT ACCESS KERNEL"* || "$u" == *"NOT FOUND"* || "$u" == *"404"* ]]; then
+              echo "Kaggle status inaccessible. Aborting polling." >&2
+              exit 1
+            fi
             if [[ "$u" == *COMPLETE* ]]; then exit 0; fi
             if [[ "$u" == *ERROR* || "$u" == *FAILED* || "$u" == *CANCEL* ]]; then exit 1; fi
             sleep 60
