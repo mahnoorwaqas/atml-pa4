@@ -1,5 +1,8 @@
 name: Run PA4 Task 1 on Kaggle
 on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/kaggle-pa4.yml]
   workflow_dispatch:
     inputs:
       experiment:
@@ -30,7 +33,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: pa4-kaggle-${{ github.ref }}
+  group: pa4-kaggle-${{ github.run_id }}
   cancel-in-progress: false
 jobs:
   kaggle:
