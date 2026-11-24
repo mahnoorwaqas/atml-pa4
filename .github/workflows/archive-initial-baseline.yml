@@ -1,0 +1,35 @@
+name: Archive initial Task 1 baseline
+on:
+  workflow_run:
+    workflows: ["Run PA4 Task 1 on Kaggle"]
+    types: [completed]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  archive:
+    if: ${{ github.event.workflow_run.id == 45340451212 && github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: pa4-task1-${{ github.event.workflow_run.id }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: initial_artifacts
+      - name: Archive completed original baseline
+        run: |
+          python -m pip install "huggingface_hub==0.36.2"
+          python scripts/archive_to_hf.py \
+            --download-dir initial_artifacts \
+            --experiment baseline \
+            --run-id "${{ github.event.workflow_run.id }}" \
+            --run-attempt "${{ github.event.workflow_run.run_attempt }}" \
+            --github-sha "${{ github.event.workflow_run.head_sha }}"
