@@ -55,7 +55,7 @@ jobs:
             exit 1
           fi
       - name: Install Kaggle CLI
-        run: python -m pip install kaggle
+        run: python -m pip install kaggle six
       - name: Validate the generated notebook and manifest
         run: |
           python scripts/make_kaggle_kernel.py \
