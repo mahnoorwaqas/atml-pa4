@@ -27,7 +27,7 @@ meta={"id":a.owner+"/"+slug,"title":"ATML PA4 "+a.experiment+" "+a.run_id,
 "enable_internet":True,"dataset_sources":[],"competition_sources":[],"kernel_sources":[]}
 config={"experiment":a.experiment,"sha":a.sha,"condition":conditions.get(a.experiment),
         "source_lock":json.loads(a.source_lock.read_text()) if a.source_lock else None}
-if a.experiment!="dataset-check" and a.source_lock is None:
+if a.experiment not in ("dataset-check","baseline") and a.source_lock is None:
     raise ValueError("A baseline source-revision lock is mandatory for comparable runs")
 code="""
 import json,pathlib,subprocess,sys,time,traceback,shutil
