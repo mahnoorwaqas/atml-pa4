@@ -1,15 +1,10 @@
 name: Task 1 full Kaggle matrix
 on:
-  workflow_run:
-    workflows: ["Run PA4 Task 1 on Kaggle"]
-    types: [completed]
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   task1:
-    # Automatically start exactly once, after the initial Kaggle baseline succeeds.
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.id == 45340451212 && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
