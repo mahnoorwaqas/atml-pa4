@@ -68,7 +68,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          kernel="$KAGGLE_USERNAME/atml-pa4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          kernel="$KAGGLE_USERNAME/atml-pa4-${EXPERIMENT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "Kaggle notebook: https://www.kaggle.com/code/$kernel"
           for ((i=0; i<195; i++)); do
             status="$(kaggle kernels status "$kernel" 2>&1 || true)"
@@ -89,7 +89,7 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p kaggle_results
-          kaggle kernels output "$KAGGLE_USERNAME/atml-pa4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p kaggle_results || true
+          kaggle kernels output "$KAGGLE_USERNAME/atml-pa4-${EXPERIMENT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p kaggle_results || true
       - name: Archive completed results privately on Hugging Face
         if: success() && env.EXPERIMENT != 'dataset-check'
         env:
