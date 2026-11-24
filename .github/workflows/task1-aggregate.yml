@@ -1,0 +1,51 @@
+name: Aggregate Task 1 evidence
+on:
+  workflow_run:
+    workflows: ["Task 1 full Kaggle matrix"]
+    types: [completed]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prepare analysis environment
+        run: python -m pip install "huggingface_hub==0.36.2" numpy matplotlib
+      - name: Collect archived conditions from private Hugging Face Hub
+        run: python scripts/collect_task1_results.py --output collected --allow-partial
+      - name: Run pooled-window and paired HellaSwag bootstrap analyses
+        run: python task1/summarize.py --root collected --out task1_summary
+      - name: Plot resource-quality tradeoffs and per-projection sensitivity
+        run: python task1/figures.py --summary task1_summary/summary.csv --output task1_summary/figures
+      - name: Archive analysis outputs on private Hub
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api=HfApi(token=os.environ['HF_TOKEN'])
+          repo='mahnoorwaqas/atml-pa4-results'
+          if not api.repo_info(repo,repo_type='dataset').private:
+              raise RuntimeError('Refusing upload to public results repository')
+          api.upload_folder(repo_id=repo,repo_type='dataset',
+              folder_path='task1_summary',
+              path_in_repo='task1/analyses/github-run-${{ github.run_id }}')
+          print('Private paired-analysis archive uploaded')
+          PY
+      - name: Upload analysis artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task1-evidence-${{ github.run_id }}
+          path: |
+            task1_summary/
+            collected/collection_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
