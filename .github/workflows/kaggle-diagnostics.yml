@@ -1,0 +1,49 @@
+name: Diagnose Kaggle identity and notebook visibility
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/kaggle-diagnostics.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: mahnoorwaqas21
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check API identity and notebook listing (never display token)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KAGGLE_API_TOKEN" || { echo "Missing KAGGLE_API_TOKEN secret"; exit 1; }
+          python -m pip install -q kaggle six
+          echo "Requested owner: $KAGGLE_USERNAME"
+          python - <<'PY'
+          import os, json
+          from kaggle.api.kaggle_api_extended import KaggleApi
+          api = KaggleApi()
+          api.authenticate()
+          for label, fn in [
+              ("configured owner", lambda: api.kernels_list(user=os.environ["KAGGLE_USERNAME"], page=1, page_size=20)),
+              ("token-owned kernels", lambda: api.kernels_list(mine=True, page=1, page_size=20)),
+          ]:
+              try:
+                  kernels = fn()
+                  print(label, "count:", len(kernels))
+                  for k in kernels:
+                      print("kernel-ref:", getattr(k, "ref", None), "title:", getattr(k, "title", None))
+              except Exception as exc:
+                  print(label, "FAILED:", type(exc).__name__, str(exc)[:400])
+          try:
+              kernel=api.kernel_status("mahnoorwaqas21/atml-pa4-45340451212-1")
+              print("suspected kernel status:", str(kernel)[:500])
+          except Exception as exc:
+              print("suspected kernel lookup FAILED:", type(exc).__name__, str(exc)[:500])
+          PY
