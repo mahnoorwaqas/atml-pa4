@@ -1,10 +1,14 @@
 name: Task 1 full Kaggle matrix
 on:
+  workflow_run:
+    workflows: ["Run PA4 Task 1 on Kaggle"]
+    types: [completed]
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   task1:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push') }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
@@ -51,7 +55,7 @@ jobs:
         run: |
           python scripts/make_kaggle_kernel.py \
             --owner "$KAGGLE_USERNAME" \
-            --run-id "${GITHUB_RUN_ID}-${EXPERIMENT}-${GITHUB_RUN_ATTEMPT}" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --experiment "$EXPERIMENT" --sha "$GITHUB_SHA" \
             --output kaggle_submission
       - name: Submit condition
@@ -60,7 +64,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          kernel="$KAGGLE_USERNAME/atml-pa4-${GITHUB_RUN_ID}-${EXPERIMENT}-${GITHUB_RUN_ATTEMPT}"
+          kernel="$KAGGLE_USERNAME/atml-pa4-${EXPERIMENT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "Kaggle kernel: https://www.kaggle.com/code/$kernel"
           for ((i=0; i<325; i++)); do
             status="$(kaggle kernels status "$kernel" 2>&1 || true)"
@@ -82,7 +86,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p kaggle_results
-          kaggle kernels output "$KAGGLE_USERNAME/atml-pa4-${GITHUB_RUN_ID}-${EXPERIMENT}-${GITHUB_RUN_ATTEMPT}" -p kaggle_results || true
+          kaggle kernels output "$KAGGLE_USERNAME/atml-pa4-${EXPERIMENT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p kaggle_results || true
       - name: Archive completed results privately on Hugging Face
         if: success()
         env:
