@@ -1,84 +1,99 @@
-name: Run PA4 on Kaggle
-
+name: Run PA4 Task 1 on Kaggle
 on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/kaggle-pa4.yml]
   workflow_dispatch:
     inputs:
       experiment:
-        description: "Initial smoke test or dataset integrity check"
+        description: "Task 1 condition (staff fixed datasets)"
         required: true
-        default: dataset-check
+        default: baseline
         type: choice
         options:
           - dataset-check
-          - attention-smoke
-          - spec-toy
-
+          - baseline
+          - mag25
+          - mag50
+          - mag75
+          - wanda25
+          - wanda50
+          - wanda75
+          - adaptive50
+          - adaptive75
+          - structured50
+          - int8
+          - int4
+          - int3
+          - awq8
+          - awq4
+          - awq3
+          - mixed4
+          - mixed3
 permissions:
   contents: read
-
 concurrency:
-  group: kaggle-pa4-${{ github.ref }}
+  group: pa4-kaggle-${{ github.ref }}
   cancel-in-progress: false
-
 jobs:
   kaggle:
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    timeout-minutes: 220
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: mahnoorwaqas21
+      EXPERIMENT: ${{ inputs.experiment || 'baseline' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Require Kaggle API token
-        shell: bash
-        run: |
-          if [[ -z "$KAGGLE_API_TOKEN" ]]; then
-            echo "Missing KAGGLE_API_TOKEN secret. Add it under Settings > Secrets and variables > Actions." >&2
-            exit 1
-          fi
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install CLI
+      - name: Require Kaggle credential
+        run: |
+          if [[ -z "$KAGGLE_API_TOKEN" ]]; then
+            echo 'Missing secret KAGGLE_API_TOKEN in this repository.' >&2
+            exit 1
+          fi
+      - name: Install Kaggle CLI
         run: python -m pip install kaggle
-      - name: Build private notebook
-        shell: bash
+      - name: Validate the generated notebook and manifest
         run: |
           python scripts/make_kaggle_kernel.py \
             --owner "$KAGGLE_USERNAME" \
             --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --experiment "${{ inputs.experiment }}" \
-            --sha "$GITHUB_SHA" \
+            --experiment "$EXPERIMENT" --sha "$GITHUB_SHA" \
             --output kaggle_submission
-      - name: Submit notebook
+          python -m json.tool kaggle_submission/kernel.ipynb >/dev/null
+          python -m json.tool kaggle_submission/kernel-metadata.json >/dev/null
+      - name: Submit to Kaggle
         run: kaggle kernels push -p kaggle_submission
-      - name: Poll notebook
+      - name: Wait for Kaggle completion
         shell: bash
         run: |
           set -euo pipefail
           kernel="$KAGGLE_USERNAME/atml-pa4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "Kaggle notebook: https://www.kaggle.com/code/$kernel"
-          for ((i=0; i<180; i++)); do
+          for ((i=0; i<195; i++)); do
             status="$(kaggle kernels status "$kernel" 2>&1 || true)"
-            echo "Poll $i: $status"
+            echo "$status"
             upper="${status^^}"
             if [[ "$upper" == *COMPLETE* ]]; then exit 0; fi
-            if [[ "$upper" == *ERROR* || "$upper" == *CANCEL* || "$upper" == *FAILED* ]]; then exit 1; fi
+            if [[ "$upper" == *ERROR* || "$upper" == *FAILED* || "$upper" == *CANCEL* ]]; then exit 1; fi
             sleep 60
           done
-          echo "Polling timed out; notebook may still be running" >&2
+          echo 'Kaggle run not complete before Actions timeout; inspect Kaggle directly.' >&2
           exit 1
-      - name: Retrieve Kaggle outputs
+      - name: Retrieve notebooks and results
         if: always()
         continue-on-error: true
         run: |
           mkdir -p kaggle_results
           kaggle kernels output "$KAGGLE_USERNAME/atml-pa4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p kaggle_results || true
-      - name: Archive artifacts
+      - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pa4-${{ inputs.experiment }}-${{ github.run_id }}
+          name: pa4-task1-${{ github.run_id }}
           path: |
             kaggle_results/
             kaggle_submission/kernel-metadata.json
