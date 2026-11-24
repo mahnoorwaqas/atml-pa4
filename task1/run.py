@@ -42,7 +42,7 @@ def perplexity(m,windows,device,outfile):
     return {"tokens":n,"mean_nll":loss/n,"ppl":math.exp(loss/n),"windows":len(rows)}
 def hs_preprocess(text):
     text=text.strip().replace(" [title]",". ")
-    return re.sub(r"\\[.*?\\]", "", text)
+    return re.sub(r"\[.*?\]", "", text)
 def hs_prompt(ex):
     ctx=ex["ctx_a"]+" "+ex["ctx_b"].capitalize()
     return hs_preprocess(ex["activity_label"]+": "+ctx)
