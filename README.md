@@ -37,3 +37,28 @@ For full method assignments see [the workflow generator](scripts/make_kaggle_ker
 The initial automated baseline and 18-condition matrix are an **attempt to run the Task 1 experimental grid**, not proof that the full assignment protocol has been satisfied. The implementation still needs validation of layerwise output-error probes, uncertainty/paired bootstrap statistics, source-revision consistency across runs, explicit training/calibration and GPU decode accounting, exact low-bit serialized representations, and reproducibility of held-out comparison metrics. If Kaggle runs hit session limits, GPU quotas, or fail on a specific condition, preserve and report them. Do not infer compression speedups from fake quantization.
 
 **Course AI policy:** Material coding assistance was provided by an LLM. The student is responsible for understanding and attributing reused code. The PDF report must be written independently by the student and may not be AI-written.
+
+## Persistent Hugging Face storage
+
+The `HF_TOKEN` GitHub Actions repository secret is used **only from GitHub Actions**.
+The [Hugging Face setup workflow](.github/workflows/hf-setup.yml) has authenticated and
+created/verified both **private** repositories:
+
+- [`mahnoorwaqas/atml-pa4-results`](https://huggingface.co/datasets/mahnoorwaqas/atml-pa4-results) (dataset)
+- [`mahnoorwaqas/atml-pa4-checkpoints`](https://huggingface.co/mahnoorwaqas/atml-pa4-checkpoints) (model)
+
+On successful Kaggle execution, the GitHub Actions job downloads notebook outputs and
+runs [`scripts/archive_to_hf.py`](scripts/archive_to_hf.py). Uploads are organized under
+`task1/<condition>/github-run-<id>-attempt-<attempt>/`; a remote file listing is
+checked before the archive step succeeds. Missing/incomplete outputs make the archive
+step fail explicitly, even when notebook submission itself succeeded.
+
+The original baseline run `45340451212` predates this integration and is automatically
+backfilled by [`archive-initial-baseline.yml`](.github/workflows/archive-initial-baseline.yml)
+**only if that exact run succeeds**. The full 18-condition matrix remains gated on its
+successful completion.
+
+**Checkpoints:** Task 1 currently archives result files and metadata, **not complete
+compressed weights or resumable optimization checkpoints**. The private checkpoint
+repository is prepared for later Tasks 2/3, for which actual model/optimizer/scheduler
+state exports must be added and tested. Kaggle temporary files are not durable storage.
