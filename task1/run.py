@@ -76,6 +76,7 @@ def hellaswag(m,examples,tok,device,outfile,limit=2000):
         normalized=[v/max(1,len(e)) for v,e in zip(scores,choices)]
         label=int(ex["label"])
         rows.append({"id":rec["source_row_index"],"order":rec["order"],"label":label,
+                     "context":text,"endings":choices,
                      "scores":scores,"acc":int(np.argmax(scores)==label),
                      "acc_norm":int(np.argmax(normalized)==label),
                      "normalized_scores":normalized})
