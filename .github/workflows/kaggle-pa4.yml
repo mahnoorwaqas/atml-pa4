@@ -38,7 +38,7 @@ concurrency:
 jobs:
   kaggle:
     runs-on: ubuntu-latest
-    timeout-minutes: 220
+    timeout-minutes: 240
     env:
       KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
       KAGGLE_USERNAME: mahnoorwaqas21
@@ -73,7 +73,7 @@ jobs:
           set -euo pipefail
           kernel="$KAGGLE_USERNAME/atml-pa4-${EXPERIMENT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "Kaggle notebook: https://www.kaggle.com/code/$kernel"
-          for ((i=0; i<195; i++)); do
+          for ((i=0; i<215; i++)); do
             status="$(kaggle kernels status "$kernel" 2>&1 || true)"
             echo "$status"
             upper="${status^^}"
