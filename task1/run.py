@@ -5,6 +5,7 @@ import argparse, gzip, hashlib, json, math, os, pathlib, random, time, re
 import numpy as np
 import torch
 import torch.nn.functional as F
+import protocol as proto
 
 ELIGIBLE = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
 MODEL = "Qwen/Qwen2.5-1.5B"
@@ -95,110 +96,102 @@ class Stats:
         for h in self.handles:h.remove()
     def norms(self):return {k:v[0].sqrt() for k,v in self.stats.items()}
     def means(self):return {k:v[1]/v[2] for k,v in self.stats.items()}
-def quantize(w,bits,group_size=128):
-    rows,cols=w.shape;groups=math.ceil(cols/group_size);pad=groups*group_size-cols
-    a=F.pad(w.float(),(0,pad)).reshape(rows,groups,group_size)
-    mn=a.amin(-1,keepdim=True);mx=a.amax(-1,keepdim=True)
-    scale=((mx-mn)/((1<<bits)-1)).clamp_min(1e-12)
-    q=torch.round((a-mn)/scale).clamp(0,(1<<bits)-1)
-    restored=(q*scale+mn).reshape(rows,-1)[:,:cols].to(w.dtype)
-    bytes_=rows*groups*(math.ceil(group_size*bits/8)+4)
-    return restored,bytes_
-def awq(w,acts,bits,return_error=False):
-    x=acts.to(w.device).float().clamp_min(1e-6);x=x/x.mean()
-    best=None
-    for alpha in (0.,.25,.5,.75,1.):
-        scale=x.pow(alpha).clamp(1e-3,1e3)
-        z,nb=quantize(w.float()*scale[None,:],bits)
-        z=z.float()/scale[None,:]
-        err=((w.float()-z).square()*x.square()[None,:]).mean().item()
-        if best is None or err<best[0]:best=(err,z.to(w.dtype),nb+2*len(scale),alpha)
-    return best if return_error else (best[1],best[2],best[3])
-def apply(m,method,sparsity,bits,norms,means):
-    mods=modules(m);infos={};num=sum(l.weight.numel() for l in mods.values())
+    def squares(self):return {k:v[0]/v[2] for k,v in self.stats.items()}
+def apply(m,method,sparsity,bits,norms,feature_sq):
+    """Apply one condition, using calibration-only, matched-budget choices."""
+    mods=modules(m)
+    required=getattr(m.config,"num_hidden_layers",None)
+    if required is not None and len(mods)!=required*7:
+        raise RuntimeError(f"Eligible projection mismatch: {len(mods)} vs {required*7}")
+    eligible=sum(layer.weight.numel() for layer in mods.values())
+    unique,excluded=proto.unique_param_count(m,set(ELIGIBLE))
+    if unique!=eligible:raise RuntimeError("Eligible/tied parameter storage mismatch")
+    info={"representation":"dense_fp16_for_numerical_evaluation",
+          "groupsize":128,"quantizer":"affine asymmetric per-row-group, nearest-even, scale FP16 + zero point INT16",
+          "eligible_weights":eligible,"excluded_fp16_bytes":excluded,
+          "calibration_proxy":"diagonal E[x_j^2] output MSE"}
+    alloc={};bits_map={};packed={};sensitivity={}
+    target=round(eligible*sparsity)
+    if method=="nonuniform":
+        for name,layer in mods.items():
+            w=layer.weight.detach()
+            s=w.float().abs()*norms[name].to(w.device).float()[None,:]
+            probe=proto.ranked_mask(w,s,round(w.numel()*.20))
+            error=proto.mse(w,w*probe,feature_sq[name])
+            sensitivity[name]=max(error,1e-12)
+        alloc=proto.bounded_allocation(
+            {n:(l.weight.numel(),sensitivity[n]) for n,l in mods.items()},target)
+        assert sum(alloc.values())==target
+        info["allocation_zeros"]=alloc
+        info["sensitivity_probe"]=sensitivity
+    if method=="mixed":
+        options={};budget=0
+        for name,layer in mods.items():
+            options[name]={}
+            for bit in (2,3,4,8):
+                result=proto.awq(layer.weight,feature_sq[name],bit)
+                options[name][bit]=(result[0],result[2])
+            budget+=options[name][bits][1]
+        bits_map,used=proto.mixed_allocation(options,budget)
+        info["eligible_q2_budget_bytes"]=budget
+        info["eligible_q3_bytes"]=used
+        info["bits_by_projection"]=bits_map
+        info["calibration_bit_errors"]={k:{str(b):round(v[0],8) for b,v in d.items()} for k,d in options.items()}
+    per_projection={}
+    total_zero=0;compressed_eligible_bytes=0
     with torch.no_grad():
-        if method=="nonuniform":
-            sens={}
-            for name,layer in mods.items():
-                z=(layer.weight.detach().float().abs()*norms[name].to(layer.weight.device)[None,:]).flatten()
-                k=max(1,int(z.numel()*.5));sens[name]=max(1e-12,float(torch.topk(z,k,largest=False).values.square().mean()))
-            # bounded integer allocation to exactly match eligible-weight zeros
-            target=round(num*sparsity);caps={};alloc={};priority={}
-            for name,l in mods.items():
-                n=l.weight.numel();lo=math.ceil(.10*n);hi=math.floor(.85*n)
-                caps[name]=hi;alloc[name]=lo;priority[name]=n/sens[name]
-            remaining=target-sum(alloc.values())
-            if remaining<0:raise ValueError("Infeasible pruning budget")
-            while remaining:
-                active=[k for k in alloc if alloc[k]<caps[k]]
-                if not active:raise ValueError("Infeasible pruning upper bound")
-                total=sum(priority[k] for k in active)
-                chosen={k:min(caps[k]-alloc[k],int(remaining*priority[k]/total)) for k in active}
-                if not sum(chosen.values()):
-                    key=max(active,key=lambda k:(priority[k],k));chosen[key]=1
-                for k,v in chosen.items():alloc[k]+=v;remaining-=v
-            infos["allocation"]={k:{"zeros":alloc[k],"sparsity":alloc[k]/mods[k].weight.numel(),
-                                     "sensitivity":sens[k]} for k in alloc}
-        if method=="mixed":
-            # Deterministic calibration-only bit-gain selection; Q2 INT3/INT4 packed budget.
-            choices={};options={};budget=0;used=0
-            for name,l in mods.items():
-                options[name]={}
-                for b in (2,3,4,8):
-                    err,reconstructed,nbytes,alpha=awq(l.weight,means[name],b,True)
-                    options[name][b]=(err,nbytes,alpha)
-                    del reconstructed
-                budget+=options[name][bits][1]
-                choices[name]=2;used+=options[name][2][1]
-            if used>budget:raise ValueError("Mixed budget infeasible")
-            while True:
-                best=None
-                for name in mods:
-                    old=choices[name];new={2:3,3:4,4:8,8:None}[old]
-                    if new is None:continue
-                    before=options[name][old];after=options[name][new]
-                    cost=after[1]-before[1];gain=max(0.,before[0]-after[0])
-                    if used+cost<=budget and gain>0:
-                        candidate=(gain/max(cost,1),name,new,cost)
-                        if best is None or candidate>best:best=candidate
-                if best is None:break
-                _,name,new,cost=best;choices[name]=new;used+=cost
-            infos["bit_assignment"]=choices;infos["eligible_budget_bytes"]=budget
-        for name,l in mods.items():
-            w=l.weight;rows,cols=w.shape
-            if method in ("magnitude","wanda","structured","nonuniform"):
-                score=w.detach().float().abs()
-                if method!="magnitude":score*=norms[name].to(w.device)[None,:]
-                if method=="structured":
-                    if cols%4:raise ValueError("2:4 alignment")
-                    small=torch.argsort(score.reshape(rows,-1,4),dim=-1,stable=True)[...,:2]
-                    mask=torch.ones((rows,cols//4,4),device=w.device,dtype=torch.bool)
-                    mask.scatter_(-1,small,False);mask=mask.reshape(rows,cols)
-                elif method=="nonuniform":
-                    z=infos["allocation"][name]["zeros"]
-                    ids=torch.argsort(score.reshape(-1),stable=True)[:z]
-                    mask=torch.ones(w.numel(),device=w.device,dtype=torch.bool)
-                    mask[ids]=False;mask=mask.reshape_as(w)
-                else:
-                    count=round(cols*sparsity)
-                    ix=torch.argsort(score,dim=-1,stable=True)[:,:count]
-                    mask=torch.ones_like(w,dtype=torch.bool);mask.scatter_(-1,ix,False)
+        for name,layer in mods.items():
+            w=layer.weight
+            initial=w.detach().clone()
+            score=initial.float().abs()
+            if method in ("wanda","nonuniform","structured"):
+                score*=norms[name].to(w.device).float()[None,:]
+            if method in ("magnitude","wanda","nonuniform","structured"):
+                zeros=(alloc[name] if method=="nonuniform" else
+                       w.numel()//2 if method=="structured" else
+                       w.shape[0]*round(w.shape[1]*sparsity))
+                mask=proto.ranked_mask(w,score,zeros,method=="structured")
                 w.mul_(mask)
+                compressed_eligible_bytes+=((w.numel()+7)//8)+2*(w.numel()-zeros)
             elif method=="ptq":
-                z,nb=quantize(w,bits);w.copy_(z);infos[name]={"packed_bytes":nb,"bits":bits}
+                recon,nb=proto.quantize(w,bits)
+                w.copy_(recon)
+                compressed_eligible_bytes+=nb
+                packed[name]=nb
             elif method in ("awq","mixed"):
-                b=infos["bit_assignment"][name] if method=="mixed" else bits
-                z,nb,alpha=awq(w,means[name],b)
-                w.copy_(z);infos[name]={"packed_bytes":nb,"bits":b,"alpha":alpha}
-        zeros=sum(int((l.weight==0).sum().item()) for l in mods.values())
-        effective=round(num*sparsity) if method=="nonuniform" else zeros
-        total_bytes=2*(sum(p.numel() for p in m.parameters())-num)
-        if method in ("ptq","awq","mixed"):total_bytes+=sum(info["packed_bytes"] for info in infos.values() if isinstance(info,dict) and "packed_bytes" in info)
-        elif method=="baseline":total_bytes+=2*num
-        else:total_bytes+=math.ceil(num/8)+2*(num-zeros)
-    infos.update({"eligible_weights":num,"zero_weights":zeros,"target_zeros":effective,
-                  "storage_estimate_bytes":total_bytes,"dense_fp16_execution":True})
-    return infos
+                b=bits_map[name] if method=="mixed" else bits
+                err,recon,nb,alpha,fp_err=proto.awq(w,feature_sq[name],b)
+                w.copy_(recon)
+                compressed_eligible_bytes+=nb;packed[name]=nb
+                per_projection.setdefault(name,{})["awq_alpha"]=alpha
+                per_projection[name]["full_precision_preservation_maxerr"]=fp_err
+                per_projection[name]["bits"]=b
+            else:
+                compressed_eligible_bytes+=2*w.numel()
+            measured_zeros=int((w==0).sum())
+            total_zero+=measured_zeros
+            q=torch.quantile(score.float().reshape(-1),
+                             torch.tensor([.10,.50,.90],device=score.device)).cpu().tolist()
+            per_projection.setdefault(name,{}).update({
+                "eligible_weights":w.numel(),"zero_weights":measured_zeros,
+                "score_p10_p50_p90":q,
+                "calibration_output_mse_proxy":proto.mse(initial,w,feature_sq[name]),
+                "l2_weight_delta":float((initial.float()-w.float()).square().sum().sqrt())})
+            del initial
+    if method in ("magnitude","wanda","nonuniform","structured"):
+        if total_zero!=target:raise AssertionError(f"zero mismatch {total_zero} vs {target}")
+    if method=="mixed" and compressed_eligible_bytes!=info["eligible_q3_bytes"]:
+        raise AssertionError("mixed budget accounting inconsistent")
+    if method=="mixed" and compressed_eligible_bytes>info["eligible_q2_budget_bytes"]:
+        raise AssertionError("Q3 exceeds uniform Q2 packed budget")
+    info.update({"per_projection":per_projection,"packed_bytes_by_projection":packed,
+                 "eligible_zero_count":total_zero,
+                 "eligible_sparsity":total_zero/eligible,
+                 "packed_eligible_bytes":compressed_eligible_bytes,
+                 "packed_total_bytes":compressed_eligible_bytes+excluded,
+                 "dense_fp16_storage_bytes":2*eligible+excluded,
+                 "dense_gpu_execution":True})
+    return info
 def bench(m,tok,device,out):
     result={}
     for size in (512,2048):
@@ -258,6 +251,7 @@ def main():
                                               attn_implementation="sdpa").to(dev).eval()
     dump(out/"checkpoint.json",{"name":MODEL,"revision":model.config._commit_hash,
                                  "tokenizer":tokenizer.name_or_path})
+    t_start=time.perf_counter()
     with torch.inference_mode():
         stats=None
         if a.method in ("wanda","structured","nonuniform","awq","mixed"):
@@ -266,10 +260,18 @@ def main():
                 ids=torch.tensor(window["token_ids"],device=dev)[None,:]
                 model(ids,use_cache=False)
             stats.close()
+        t_calibration=time.perf_counter()
+        calibration_norms=stats.norms() if stats else {}
+        calibration_mse=stats.squares() if stats else {}
         compression=apply(model,a.method,a.sparsity,a.bits,
-                          stats.norms() if stats else {},
-                          stats.means() if stats else {})
+                          calibration_norms,calibration_mse)
+    dump(out/"costs.json",{"calibration_seconds":t_calibration-t_start,
+                           "compression_seconds":time.perf_counter()-t_calibration})
     dump(out/"compression.json",compression)
+    dump(out/"protocol.json",{"seed":6304,"calibration_count":128,
+         "development_count":32,"group_size":128,"attention_backend":"sdpa",
+         "quantization":"asymmetric affine with nearest-even group rounding",
+         "score_convention":"conditional log likelihood and characters for HellaSwag acc_norm"})
     for key in ("wiki","c4"):
         result=perplexity(model,records(paths[key]),dev,out/f"{key}_windows.json")
         dump(out/f"{key}_summary.json",result)
