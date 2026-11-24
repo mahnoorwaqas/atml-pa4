@@ -1,0 +1,86 @@
+name: Run PA4 on Kaggle
+
+on:
+  workflow_dispatch:
+    inputs:
+      experiment:
+        description: "Initial smoke test or dataset integrity check"
+        required: true
+        default: dataset-check
+        type: choice
+        options:
+          - dataset-check
+          - attention-smoke
+          - spec-toy
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaggle-pa4-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  kaggle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_USERNAME: mahnoorwaqas21
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require Kaggle API token
+        shell: bash
+        run: |
+          if [[ -z "$KAGGLE_API_TOKEN" ]]; then
+            echo "Missing KAGGLE_API_TOKEN secret. Add it under Settings > Secrets and variables > Actions." >&2
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CLI
+        run: python -m pip install kaggle
+      - name: Build private notebook
+        shell: bash
+        run: |
+          python scripts/make_kaggle_kernel.py \
+            --owner "$KAGGLE_USERNAME" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --experiment "${{ inputs.experiment }}" \
+            --sha "$GITHUB_SHA" \
+            --output kaggle_submission
+      - name: Submit notebook
+        run: kaggle kernels push -p kaggle_submission
+      - name: Poll notebook
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$KAGGLE_USERNAME/atml-pa4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Kaggle notebook: https://www.kaggle.com/code/$kernel"
+          for ((i=0; i<180; i++)); do
+            status="$(kaggle kernels status "$kernel" 2>&1 || true)"
+            echo "Poll $i: $status"
+            upper="${status^^}"
+            if [[ "$upper" == *COMPLETE* ]]; then exit 0; fi
+            if [[ "$upper" == *ERROR* || "$upper" == *CANCEL* || "$upper" == *FAILED* ]]; then exit 1; fi
+            sleep 60
+          done
+          echo "Polling timed out; notebook may still be running" >&2
+          exit 1
+      - name: Retrieve Kaggle outputs
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p kaggle_results
+          kaggle kernels output "$KAGGLE_USERNAME/atml-pa4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p kaggle_results || true
+      - name: Archive artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pa4-${{ inputs.experiment }}-${{ github.run_id }}
+          path: |
+            kaggle_results/
+            kaggle_submission/kernel-metadata.json
+          if-no-files-found: warn
+          retention-days: 30
