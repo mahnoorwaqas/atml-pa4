@@ -51,4 +51,36 @@ for filename in sorted(a.summary.parent.glob('*_projection_map.json')):
         fig.colorbar(im,ax=ax)
         fig.tight_layout();fig.savefig(a.output/f'{method}_{value}.png',dpi=180)
         plt.close(fig)
+for filename in sorted(a.summary.parent.glob('*_sensitivity_allocation.json')):
+    method=filename.name.split('_sensitivity_allocation.json')[0]
+    obj=json.loads(filename.read_text())
+    visualizations={}
+    if 'sensitivity_probe' in obj:
+        visualizations['pruning_sensitivity']=obj['sensitivity_probe']
+        visualizations['pruning_zeros']=obj['allocation_zeros']
+    if 'calibration_bit_errors' in obj:
+        visualizations['quantization_int2_vs_int4_sensitivity']={
+            k:v['2']-v['4'] for k,v in obj['calibration_bit_errors'].items()}
+        visualizations['allocated_bits']=obj['bits_by_projection']
+    for kind,records in visualizations.items():
+        layers=sorted({int(m.group(1)) for k in records
+                       if (m:=re.search(r'layers\.(\d+)\.',k))})
+        projections=['q_proj','k_proj','v_proj','o_proj','gate_proj','up_proj','down_proj']
+        values=np.full((len(layers),len(projections)),np.nan)
+        for k,v in records.items():
+            match=re.search(r'layers\.(\d+)\.',k)
+            proj=k.rsplit('.',1)[-1]
+            if match and proj in projections:
+                values[layers.index(int(match.group(1))),projections.index(proj)]=v
+        if values.size==0:continue
+        fig,ax=plt.subplots(figsize=(10,7))
+        im=ax.imshow(values,aspect='auto',interpolation='none')
+        ax.set_yticks(range(len(layers)),layers)
+        ax.set_xticks(range(len(projections)),projections,rotation=45,ha='right')
+        ax.set_title(f'{method} — {kind}')
+        ax.set_xlabel('Projection');ax.set_ylabel('Transformer block')
+        fig.colorbar(im,ax=ax)
+        fig.tight_layout()
+        fig.savefig(a.output/f'{method}_{kind}.png',dpi=180)
+        plt.close(fig)
 print('Wrote Task 1 evidence figures to',a.output)
