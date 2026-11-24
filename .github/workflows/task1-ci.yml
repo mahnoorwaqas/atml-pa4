@@ -22,7 +22,9 @@ jobs:
       - name: Compile Task 1 code and Kaggle generator
         run: python -m py_compile task1/run.py scripts/make_kaggle_kernel.py
       - name: Install CPU PyTorch for numerical protocol tests
-        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy
       - name: Test Task 1 numerical rules
         run: python -m unittest discover -s tests -p 'test_task1_*.py' -v
       - name: Check every configured experiment produces a valid private notebook
