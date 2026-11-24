@@ -60,7 +60,15 @@ def main():
             raise RuntimeError('Staff token windows differ from baseline: '+name)
         wiki=load(dir/'wiki_summary.json');c4=load(dir/'c4_summary.json')
         hs=load(dir/'hellaswag_summary.json');comp=load(dir/'compression.json')
+        costs=load(dir/'costs.json')
+        timings=load(dir/'timing.json')
         rows.append(dict(condition=name,
+                 calibration_seconds=costs['calibration_seconds'],
+                 compression_seconds=costs['compression_seconds'],
+                 prefill512_ms_median=float(np.median(timings['512']['prefill_ms'])),
+                 prefill2048_ms_median=float(np.median(timings['2048']['prefill_ms'])),
+                 decode64_ms_median=float(np.median(timings['decode_64_tokens']['latency_ms'])),
+                 prefill512_peak_allocated_bytes=timings['512']['peak_allocated_bytes'],
                  wiki_nll=wiki['mean_nll'],wiki_ppl=wiki['ppl'],
                  wiki_delta_ppl=wiki['ppl']-load(runs['baseline']/'wiki_summary.json')['ppl'],
                  c4_nll=c4['mean_nll'],c4_ppl=c4['ppl'],
