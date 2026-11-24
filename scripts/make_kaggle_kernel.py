@@ -39,14 +39,15 @@ def run(argv,cwd=None):
 try:
     staff=pathlib.Path('/kaggle/working/atml-pa4-datasets')
     run(['git','clone','--depth','1','https://github.com/AbDu11aHHH/atml-pa4-datasets.git',str(staff)])
+    project=pathlib.Path('/kaggle/working/atml-pa4')
+    run(['git','clone','https://github.com/mahnoorwaqas/atml-pa4.git',str(project)])
+    run(['git','checkout',cfg['sha']],project)
     run([sys.executable,'scripts/validate_assets.py'],staff)
-    run([sys.executable,'scripts/verify_checksums.py'],staff)
+    run([sys.executable,'scripts/audit_staff.py',str(staff),
+         str(out/'staff_checksum_audit.json')],project)
     if cfg['experiment']=='dataset-check':
         run([sys.executable,'-m','unittest','discover','-s','tests','-v'],staff)
     else:
-        project=pathlib.Path('/kaggle/working/atml-pa4')
-        run(['git','clone','https://github.com/mahnoorwaqas/atml-pa4.git',str(project)])
-        run(['git','checkout',cfg['sha']],project)
         run([sys.executable,'-m','pip','install','--quiet',
              'transformers==4.57.1','huggingface_hub==0.36.2',
              'datasets','accelerate','safetensors','sentencepiece'])
@@ -72,7 +73,7 @@ finally:
 """
 src="CONFIG = "+repr(json.dumps(config))+"\n"+code
 nb={"cells":[{"cell_type":"code","execution_count":None,"metadata":{},"outputs":[],
-"source":src.splitlines(keepends=True)}],
+"source":src.splitlines(keepends=True),"id":"pa4-runner"}],
 "metadata":{"kernelspec":{"display_name":"Python 3","language":"python","name":"python3"},
 "language_info":{"name":"python"}},"nbformat":4,"nbformat_minor":5}
 (a.output/"kernel-metadata.json").write_text(json.dumps(meta,indent=2)+"\n")
