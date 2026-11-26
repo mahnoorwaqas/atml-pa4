@@ -1,0 +1,61 @@
+name: Audit Task 3 private Hugging Face checkpoints and records
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/task3-hf-audit.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install "huggingface_hub==0.36.2"
+      - name: Verify every seed's actual private uploads and 40000 teacher scored tokens
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os
+          from huggingface_hub import HfApi,hf_hub_download
+          token=os.environ['HF_TOKEN']
+          api=HfApi(token=token)
+          results='mahnoorwaqas/atml-pa4-results'
+          models='mahnoorwaqas/atml-pa4-checkpoints'
+          assert api.repo_info(results,repo_type='dataset').private
+          assert api.repo_info(models,repo_type='model').private
+          a=set(api.list_repo_files(results,repo_type='dataset'))
+          b=set(api.list_repo_files(models,repo_type='model'))
+          entries=[('off',6304,'45773884864'),('off',6305,'45773884864'),
+                   ('on',6304,'45785982970'),('on',6305,'45773884864')]
+          for method,seed,run in entries:
+              prefix=f'task3/{method}_{seed}/github-run-{run}/'
+              files=[
+               'completed.json','training_status.json','rollouts.jsonl',
+               'run_manifest.json','source_revisions.json','staff_checksum_audit.json']
+              evidence={f:(prefix+f in a) for f in files}
+              checkpoints={f:(prefix+f in b) for f in (
+                  'adapter/adapter_config.json','merged/config.json')}
+              print('===',method,seed,'===')
+              print('results',json.dumps(evidence,sort_keys=True))
+              print('checkpoints',json.dumps(checkpoints,sort_keys=True))
+              if all(evidence.values()) and all(checkpoints.values()):
+                  p=hf_hub_download(repo_id=results,repo_type='dataset',
+                                    filename=prefix+'training_status.json',token=token)
+                  status=json.load(open(p))
+                  done=json.load(open(hf_hub_download(repo_id=results,repo_type='dataset',
+                                        filename=prefix+'completed.json',token=token)))
+                  assert status['scored']=={'math':30000,'short':10000}
+                  assert done['finished'] and done['teacher_scored_tokens']==status['scored']
+                  print('VERIFIED',json.dumps({
+                      'scored':status['scored'],'updates':status.get('updates'),
+                      'skipped_updates':status.get('skipped_updates'),
+                      'merge_error':status.get('merged_logit_max_abs_error')}))
+              else:print('PENDING_OR_INCOMPLETE')
+          PY
