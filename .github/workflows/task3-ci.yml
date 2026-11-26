@@ -1,0 +1,24 @@
+name: Validate PA4 Task 3 exact sampler
+on:
+  push:
+    branches: [main]
+    paths:
+      - "task3/**"
+      - "tests/test_task3_*.py"
+      - ".github/workflows/task3-ci.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  correctness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install numpy scipy torch --index-url https://pypi.org/simple
+      - run: python -m py_compile task3/*.py
+      - name: Run exact speculative sampler and Markov negative-control tests
+        run: python -m unittest discover -s tests -p 'test_task3_*.py' -v
