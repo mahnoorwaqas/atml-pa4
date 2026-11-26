@@ -1,0 +1,45 @@
+name: Summarize Task 3 frozen-prefix evidence
+on:
+  workflow_run:
+    workflows: ["Complete Task 3 frozen-prefix KL TV evidence"]
+    types: [completed]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  analyze:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      BANK_RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install analysis libraries
+        run: python -m pip install numpy "huggingface_hub==0.36.2"
+      - name: Analyze shared and student-own banks
+        run: |
+          python task3/summarize_banks.py --bank-run-id "$BANK_RUN_ID" --out bank_report
+          cat bank_report/prefix_summary.md
+      - name: Archive private report
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api=HfApi(token=os.environ['HF_TOKEN'])
+          repo='mahnoorwaqas/atml-pa4-results'
+          assert api.repo_info(repo,repo_type='dataset').private
+          api.upload_folder(repo_id=repo,repo_type='dataset',
+              folder_path='bank_report',
+              path_in_repo='task3/analyses/prefix-banks-run-'+os.environ['BANK_RUN_ID'])
+          print('Task 3 prefix analysis archived privately')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: task3-prefix-report-${{ github.run_id }}
+          path: bank_report/*
+          retention-days: 30
