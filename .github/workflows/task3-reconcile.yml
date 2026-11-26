@@ -1,0 +1,121 @@
+name: Reconcile manual Task 3 run and replace cancelled seed
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/task3-reconcile.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  adopt-running:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install kaggle six "huggingface_hub==0.36.2"
+      - name: Follow existing manually restarted on-policy 6305; never resubmit it
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="mahnoorwaqas21/atml-pa4-t3-on-6305-45773884864-1"
+          echo "Adopted existing Kaggle run: https://www.kaggle.com/code/$kernel"
+          for ((i=0;i<325;i++)); do
+            status="$(kaggle kernels status "$kernel" 2>&1 || true)"
+            echo "$status"
+            upper="${status^^}"
+            if [[ "$upper" == *"COMPLETE"* ]]; then exit 0; fi
+            if [[ "$upper" == *"ERROR"* || "$upper" == *"CANCEL"* || "$upper" == *"FAILED"* || "$upper" == *"PERMISSION"* || "$upper" == *"NOT FOUND"* ]]; then exit 1; fi
+            sleep 60
+          done
+          exit 1
+      - name: Recover existing on-policy 6305 result without retraining
+        shell: bash
+        run: |
+          mkdir -p task3_download
+          kaggle kernels output "mahnoorwaqas21/atml-pa4-t3-on-6305-45773884864-1" -p task3_download
+      - name: Validate 40k-token quotas and ensure private archive
+        run: |
+          python scripts/archive_task3.py --download-dir task3_download \
+            --method on --seed 6305 --github-run-id 45773884864
+      - name: Save adopted run diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task3-adopted-on-6305
+          path: |
+            task3_download/task3_results/run_manifest.json
+            task3_download/task3_results/training/training_status.json
+            task3_download/task3_results/training/completed.json
+          if-no-files-found: warn
+          retention-days: 30
+  replace-cancelled:
+    needs: adopt-running
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      OWNER: mahnoorwaqas21
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install kaggle six "huggingface_hub==0.36.2"
+      - name: Reuse identical locked source model/data revisions
+        run: |
+          python scripts/fetch_baseline_lock.py --run-id 45352560465 \
+            --attempt 1 --output task3_source_revisions.json
+      - name: Generate only missing on-policy seed 6304
+        run: |
+          python scripts/make_task3_kernel.py --owner "$OWNER" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --sha "$GITHUB_SHA" --source-lock task3_source_revisions.json \
+            --method on --seed 6304 --output task3_submission
+      - name: Submit replacement notebook, not the already running seed 6305
+        run: kaggle kernels push -p task3_submission
+      - name: Monitor replacement until completed
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$OWNER/atml-pa4-t3-on-6304-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Replacement notebook: https://www.kaggle.com/code/$kernel"
+          for ((i=0;i<325;i++)); do
+            status="$(kaggle kernels status "$kernel" 2>&1 || true)"
+            echo "$status"
+            upper="${status^^}"
+            if [[ "$upper" == *"COMPLETE"* ]]; then exit 0; fi
+            if [[ "$upper" == *"ERROR"* || "$upper" == *"CANCEL"* || "$upper" == *"FAILED"* || "$upper" == *"PERMISSION"* || "$upper" == *"NOT FOUND"* ]]; then exit 1; fi
+            sleep 60
+          done
+          exit 1
+      - name: Retrieve replacement checkpoint
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p task3_download
+          kaggle kernels output "$OWNER/atml-pa4-t3-on-6304-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p task3_download || true
+      - name: Verify 40k teacher-scored tokens and archive to private HF
+        if: success()
+        run: |
+          python scripts/archive_task3.py --download-dir task3_download \
+            --method on --seed 6304 --github-run-id "$GITHUB_RUN_ID"
+      - name: Save replacement diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task3-replacement-on-6304
+          path: |
+            task3_submission/kernel-metadata.json
+            task3_download/task3_results/run_manifest.json
+            task3_download/task3_results/training/training_status.json
+            task3_download/task3_results/training/completed.json
+            task3_download/*.log
+          if-no-files-found: warn
+          retention-days: 30
