@@ -19,6 +19,12 @@ jobs:
         run: |
           echo "=== Latest notebooks owned by Kaggle account ==="
           kaggle kernels list --mine --page-size 100 || true
+          echo "=== Full training matrix actual statuses ==="
+          for method in off on; do
+            for seed in 6304 6305; do
+              kaggle kernels status "mahnoorwaqas21/atml-pa4-t3-${method}-${seed}-45773884864-1" || true
+            done
+          done
           echo "=== Corrected smoke ==="
           kaggle kernels status "mahnoorwaqas21/atml-pa4-t3-smoke-off-6304-45768845934-1" || true
           for method in off on; do
