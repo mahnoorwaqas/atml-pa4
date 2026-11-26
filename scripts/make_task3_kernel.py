@@ -8,16 +8,18 @@ p.add_argument('--source-lock',type=pathlib.Path,required=True)
 p.add_argument('--method',choices=('off','on'),required=True)
 p.add_argument('--seed',type=int,choices=(6304,6305),required=True)
 p.add_argument('--output',type=pathlib.Path,required=True)
+p.add_argument('--smoke',action='store_true')
 a=p.parse_args()
 if not re.fullmatch('[0-9a-f]{40}',a.sha):raise ValueError('Missing pinned code SHA')
 if not re.fullmatch('[a-z0-9-]{3,30}',a.owner):raise ValueError('Invalid username')
-slug=f'atml-pa4-t3-{a.method}-{a.seed}-{a.run_id}'
+prefix='atml-pa4-t3-smoke' if a.smoke else 'atml-pa4-t3'
+slug=f'{prefix}-{a.method}-{a.seed}-{a.run_id}'
 if len(slug)>50:raise ValueError('Kaggle slug too long')
 a.output.mkdir(parents=True,exist_ok=True)
 lock=json.loads(a.source_lock.read_text())
 required={'gsm8k','model_draft','model_target','model_base','c4','wikitext','hellaswag'}
 if not required.issubset(lock['revisions']):raise ValueError('Invalid pinned revision lock')
-cfg={'sha':a.sha,'method':a.method,'seed':a.seed,'lock':lock}
+cfg={'sha':a.sha,'method':a.method,'seed':a.seed,'lock':lock,'smoke':a.smoke}
 source="""
 import json,pathlib,subprocess,sys,time,traceback,os
 cfg=json.loads(CONFIG)
@@ -48,7 +50,7 @@ try:
     (out/'source_revisions.json').write_text(json.dumps(cfg['lock'],indent=2)+'\\n')
     run([sys.executable,'task3/train.py','--staff',str(staff),
          '--out',str(out/'training'),'--method',cfg['method'],
-         '--seed',str(cfg['seed'])],project)
+         '--seed',str(cfg['seed'])]+(['--smoke'] if cfg['smoke'] else []),project)
     completed=json.loads((out/'training/completed.json').read_text())
     if completed.get('finished')!=True:raise RuntimeError('No finished marker')
     manifest['result']='success'
@@ -63,7 +65,7 @@ nb={'cells':[{'cell_type':'code','execution_count':None,'metadata':{},'outputs':
     'source':('CONFIG = '+repr(json.dumps(cfg))+'\n'+source).splitlines(keepends=True)}],
     'metadata':{'kernelspec':{'display_name':'Python 3','language':'python','name':'python3'}},
     'nbformat':4,'nbformat_minor':5}
-metadata={'id':f'{a.owner}/{slug}','title':f'ATML PA4 Task 3 {a.method} seed {a.seed}',
+metadata={'id':f'{a.owner}/{slug}','title':slug.replace('-', ' '),
     'code_file':'kernel.ipynb','language':'python','kernel_type':'notebook',
     'is_private':True,'enable_gpu':True,'enable_internet':True,
     'dataset_sources':[],'competition_sources':[],'kernel_sources':[]}
