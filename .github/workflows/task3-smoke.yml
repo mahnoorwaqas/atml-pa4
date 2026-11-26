@@ -39,7 +39,7 @@ jobs:
           assert meta['is_private'] and meta['enable_gpu']
           assert 'smoke' in meta['id']
           PY
-      - name: Submit isolated 384-token GPU correctness smoke
+      - name: Submit repaired 384-token GPU correctness smoke
         run: kaggle kernels push -p smoke_submission
       - name: Wait for finished gradient and LoRA merge test
         shell: bash
