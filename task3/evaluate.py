@@ -22,17 +22,20 @@ def dump(file,x):
 def prompt_data(staff):
     math=read(staff/'data/public_locked/gsm8k_test_locked.jsonl.gz')
     short=read(staff/'data/short_form/short_test.jsonl')
-    train=read(staff/'data/short_form/short_train.jsonl')
-    fam={x['family'] for x in train}
+    # Familiar/shifted templates are labeled by test split, not family ID.
     if len(math)!=60 or len(short)!=60:raise RuntimeError('Expected exactly 120 held-out prompts')
     out=[]
     for r in math:
         out.append(dict(id=f'GSM8K-{r["order"]:04d}',domain='math',
              prompt=r['example']['question'],answer=r['example'].get('answer','')))
     for r in short:
-        out.append(dict(id=r['id'],domain='familiar_extraction' if r['family'] in fam
-             else 'heldout_extraction',prompt=r['input'],answer=r['answer'],
-             family=r['family']))
+        if r.get('split') not in ('familiar','shifted'):
+            raise RuntimeError(f"Invalid short-form test split: {r.get('split')!r}")
+        out.append(dict(id=r['id'],
+             domain=('familiar_extraction' if r['split']=='familiar'
+                     else 'heldout_extraction'),
+             prompt=r['input'],answer=r['answer'],
+             family=r['family'],split=r['split']))
     if sum(x['domain']=='familiar_extraction' for x in out)!=30:
         raise RuntimeError('Expected 30 familiar short-format prompts')
     if sum(x['domain']=='heldout_extraction' for x in out)!=30:
