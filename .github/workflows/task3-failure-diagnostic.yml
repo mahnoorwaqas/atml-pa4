@@ -1,0 +1,27 @@
+name: Diagnose actual Task 3 Kaggle execution failure
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/task3-failure-diagnostic.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+    steps:
+      - run: python -m pip install kaggle six
+      - name: Retrieve original off-policy notebook failure
+        shell: bash
+        run: |
+          mkdir -p diagnostic
+          kernel="mahnoorwaqas21/atml-pa4-task-3-off-seed-6304"
+          kaggle kernels status "$kernel" || true
+          kaggle kernels output "$kernel" -p diagnostic >/dev/null || true
+          echo "==== Kaggle run manifest ===="
+          if [[ -f diagnostic/task3_results/run_manifest.json ]]; then cat diagnostic/task3_results/run_manifest.json; fi
+          echo "==== Kaggle log last 180 lines ===="
+          tail -n 180 diagnostic/atml-pa4-task-3-off-seed-6304.log || true
