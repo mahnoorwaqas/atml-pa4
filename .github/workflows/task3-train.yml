@@ -1,13 +1,14 @@
 name: Run Task 3 LoRA distillation on Kaggle
 on:
-  push:
-    branches: [main]
-    paths: [.github/workflows/task3-train.yml]
+  workflow_run:
+    workflows: ["Run PA4 Task 3 GPU smoke test"]
+    types: [completed]
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   train:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
