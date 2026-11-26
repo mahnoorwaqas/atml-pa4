@@ -17,6 +17,8 @@ jobs:
       - name: Check canonical Kaggle URLs
         shell: bash
         run: |
+          echo "=== Corrected smoke ==="
+          kaggle kernels status "mahnoorwaqas21/atml-pa4-t3-smoke-off-6304-45768845934-1" || true
           for method in off on; do
             for seed in 6304 6305; do
               kernel="mahnoorwaqas21/atml-pa4-task-3-${method}-seed-${seed}"
