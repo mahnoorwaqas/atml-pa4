@@ -1,0 +1,137 @@
+name: Complete Task 3 frozen-prefix KL TV evidence
+on:
+  workflow_run:
+    workflows: ["Evaluate Task 3 speculative decoding on Kaggle"]
+    types: [completed]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prefix-banks:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      OWNER: mahnoorwaqas21
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install clients
+        run: python -m pip install kaggle six "huggingface_hub==0.36.2"
+      - name: Lock all source models and dataset revisions
+        run: |
+          python scripts/fetch_baseline_lock.py --run-id 45352560465 \
+            --attempt 1 --output source_revisions.json
+          python -m py_compile task3/bank_compare.py scripts/make_task3_banks_kernel.py
+      - name: Generate and submit small private 3-domain prefix-bank validation
+        run: |
+          python scripts/make_task3_banks_kernel.py --owner "$OWNER" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --sha "$GITHUB_SHA" --source-lock source_revisions.json \
+            --smoke --output banks_smoke
+          kaggle kernels push -p banks_smoke
+      - name: Monitor prefix-bank GPU correctness smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$OWNER/atml-t3-banks-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Banks smoke notebook: https://www.kaggle.com/code/$kernel"
+          for ((i=0;i<125;i++)); do
+            state="$(kaggle kernels status "$kernel" 2>&1 || true)"
+            echo "$state"
+            upper="${state^^}"
+            if [[ "$upper" == *"COMPLETE"* ]]; then exit 0; fi
+            if [[ "$upper" == *"ERROR"* || "$upper" == *"CANCEL"* || "$upper" == *"FAILED"* || "$upper" == *"PERMISSION"* || "$upper" == *"NOT FOUND"* ]]; then exit 1; fi
+            sleep 60
+          done
+          exit 1
+      - name: Retrieve small bank outputs even on failure
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p bank_smoke_download
+          kaggle kernels output "$OWNER/atml-t3-banks-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p bank_smoke_download || true
+      - name: Verify each of seven source banks against five drafts
+        if: success()
+        run: |
+          python - <<'PY'
+          import collections,json,pathlib
+          root=pathlib.Path('bank_smoke_download/task3_banks/metrics')
+          done=json.loads((root/'completed.json').read_text())
+          assert done['finished'] and done['smoke'] and done['prompt_count']==3
+          assert len(done['bank_counts'])==7
+          assert all(n==3 for n in done['bank_counts'].values())
+          assert len(done['metric_rows'])==5
+          assert all(v>0 for v in done['metric_rows'].values())
+          print('Seven bank families and five drafts successfully validated')
+          PY
+      - name: Generate and submit full private prefix-bank analysis
+        if: success()
+        run: |
+          python scripts/make_task3_banks_kernel.py --owner "$OWNER" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --sha "$GITHUB_SHA" --source-lock source_revisions.json \
+            --output banks_full
+          kaggle kernels push -p banks_full
+      - name: Monitor full 120-prompt seven-bank comparison
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$OWNER/atml-t3-banks-full-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Full prefix-bank notebook: https://www.kaggle.com/code/$kernel"
+          for ((i=0;i<325;i++)); do
+            state="$(kaggle kernels status "$kernel" 2>&1 || true)"
+            echo "$state"
+            upper="${state^^}"
+            if [[ "$upper" == *"COMPLETE"* ]]; then exit 0; fi
+            if [[ "$upper" == *"ERROR"* || "$upper" == *"CANCEL"* || "$upper" == *"FAILED"* || "$upper" == *"PERMISSION"* || "$upper" == *"NOT FOUND"* ]]; then exit 1; fi
+            sleep 60
+          done
+          exit 1
+      - name: Retrieve completed or failed full comparison output
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p bank_full_download
+          kaggle kernels output "$OWNER/atml-t3-banks-full-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p bank_full_download || true
+      - name: Verify every bank/model and archive private evidence
+        if: success()
+        run: |
+          python - <<'PY'
+          import json,pathlib,os
+          from huggingface_hub import HfApi
+          path=pathlib.Path('bank_full_download/task3_banks/metrics')
+          done=json.loads((path/'completed.json').read_text())
+          assert done['finished'] and not done['smoke']
+          assert done['prompt_count']==120
+          assert len(done['bank_counts'])==7
+          assert all(x==120 for x in done['bank_counts'].values())
+          assert len(done['metric_rows'])==5
+          assert len(set(done['metric_rows'].values()))==1
+          assert all(x>0 for x in done['metric_rows'].values())
+          api=HfApi(token=os.environ['HF_TOKEN'])
+          repo='mahnoorwaqas/atml-pa4-results'
+          assert api.repo_info(repo,repo_type='dataset').private
+          api.upload_folder(repo_id=repo,repo_type='dataset',folder_path=str(path),
+             path_in_repo='task3/prefix-banks/github-run-'+os.environ['GITHUB_RUN_ID'])
+          print('All 7 prefix banks × 120 prompts × 5 draft comparisons verified and archived privately')
+          PY
+      - name: Save useful diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task3-prefix-banks-${{ github.run_id }}
+          path: |
+            bank_smoke_download/task3_banks/run_manifest.json
+            bank_smoke_download/task3_banks/metrics/completed.json
+            bank_full_download/task3_banks/run_manifest.json
+            bank_full_download/task3_banks/metrics/completed.json
+            bank_smoke_download/*.log
+            bank_full_download/*.log
+          if-no-files-found: warn
+          retention-days: 30
