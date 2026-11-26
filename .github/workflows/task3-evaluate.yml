@@ -1,7 +1,7 @@
 name: Evaluate Task 3 speculative decoding on Kaggle
 on:
   workflow_run:
-    workflows: ["Run Task 3 LoRA distillation on Kaggle"]
+    workflows: ["Reconcile manual Task 3 run and replace cancelled seed"]
     types: [completed]
   workflow_dispatch:
 permissions:
@@ -32,7 +32,8 @@ jobs:
       OWNER: mahnoorwaqas21
       CONDITION: ${{ matrix.condition }}
       SEED: ${{ matrix.seed }}
-      TRAIN_RUN_ID: ${{ github.event.workflow_run.id || '45768153250' }}
+      TRAIN_RUN_ID: 45773884864
+      RECOVERY_RUN_ID: ${{ github.event.workflow_run.id }}
       TRAIN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '1' }}
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +51,11 @@ jobs:
           set -euo pipefail
           extra=()
           if [[ "$CONDITION" != "original" ]]; then
-            extra=(--training-run-id "${TRAIN_RUN_ID}-${TRAIN_ATTEMPT}")
+            source_run="${TRAIN_RUN_ID}-1"
+            if [[ "$CONDITION" == "on" && "$SEED" == "6304" ]]; then
+              source_run="${RECOVERY_RUN_ID}-1"
+            fi
+            extra=(--training-run-id "$source_run")
           fi
           python scripts/make_task3_eval_kernel.py --owner "$OWNER" \
             --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
