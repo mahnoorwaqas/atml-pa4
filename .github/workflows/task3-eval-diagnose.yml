@@ -1,0 +1,46 @@
+name: Diagnose Task 3 evaluation Kaggle failures
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/task3-eval-diagnose.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+    steps:
+      - run: python -m pip install kaggle six
+      - name: Download original and off-policy failed evaluation traces
+        shell: bash
+        run: |
+          for spec in original-6304 off-6304 on-6304; do
+            kernel="mahnoorwaqas21/atml-pa4-t3-eval-${spec}-45797887667-1"
+            dir="diagnostic-${spec}"
+            mkdir -p "$dir"
+            echo "========== $kernel =========="
+            kaggle kernels status "$kernel" || true
+            kaggle kernels output "$kernel" -p "$dir" >/dev/null || true
+            if [[ -f "$dir/task3_evaluation/run_manifest.json" ]]; then
+              cat "$dir/task3_evaluation/run_manifest.json" | tail -c 9000
+            fi
+            if [[ -f "$dir/atml-pa4-t3-eval-${spec}-45797887667-1.log" ]]; then
+              python - "$dir/atml-pa4-t3-eval-${spec}-45797887667-1.log" <<'PY'
+          import json,sys
+          path=sys.argv[1]
+          lines=[]
+          for l in open(path,errors='replace'):
+              try:
+                  row=json.loads(l.lstrip(',').strip())
+                  if isinstance(row,dict):l=str(row.get('data',''))
+              except Exception:pass
+              lines.append(l)
+          for l in lines[-180:]:
+              if any(term in l for term in ['Traceback','Error','Exception','RuntimeError','ValueError','File','line ','RUN ','AssertionError','OutOfMemory']):
+                  print(l[:700])
+          PY
+            fi
+          done
