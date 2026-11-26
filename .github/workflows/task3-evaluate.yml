@@ -1,0 +1,104 @@
+name: Evaluate Task 3 speculative decoding on Kaggle
+on:
+  workflow_run:
+    workflows: ["Run Task 3 LoRA distillation on Kaggle"]
+    types: [completed]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evaluate:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - condition: original
+            seed: 6304
+          - condition: off
+            seed: 6304
+          - condition: off
+            seed: 6305
+          - condition: on
+            seed: 6304
+          - condition: on
+            seed: 6305
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      OWNER: mahnoorwaqas21
+      CONDITION: ${{ matrix.condition }}
+      SEED: ${{ matrix.seed }}
+      TRAIN_RUN_ID: ${{ github.event.workflow_run.id || '45768153250' }}
+      TRAIN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install kaggle six "huggingface_hub==0.36.2"
+      - name: Prepare original target and draft revision lock
+        run: |
+          python scripts/fetch_baseline_lock.py --run-id 45352560465 \
+            --attempt 1 --output source_revisions.json
+      - name: Generate private Task 3 evaluation notebook
+        shell: bash
+        run: |
+          set -euo pipefail
+          extra=()
+          if [[ "$CONDITION" != "original" ]]; then
+            extra=(--training-run-id "${TRAIN_RUN_ID}-${TRAIN_ATTEMPT}")
+          fi
+          python scripts/make_task3_eval_kernel.py --owner "$OWNER" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --sha "$GITHUB_SHA" --source-lock source_revisions.json \
+            --condition "$CONDITION" --seed "$SEED" \
+            "${extra[@]}" --output evaluation_submission
+          python - <<'PY'
+          import ast,json
+          nb=json.load(open('evaluation_submission/kernel.ipynb'))
+          ast.parse(''.join(nb['cells'][0]['source']))
+          PY
+      - name: Submit exact EOS-aware speculative benchmarks
+        run: kaggle kernels push -p evaluation_submission
+      - name: Monitor actual Kaggle evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$OWNER/atml-pa4-t3-eval-$CONDITION-$SEED-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          for ((i=0;i<325;i++)); do
+            state="$(kaggle kernels status "$kernel" 2>&1 || true)"
+            echo "$state"
+            upper="${state^^}"
+            if [[ "$upper" == *"NOT FOUND"* || "$upper" == *"PERMISSION"* || "$upper" == *"CANNOT ACCESS"* ]]; then exit 1; fi
+            if [[ "$upper" == *"COMPLETE"* ]]; then exit 0; fi
+            if [[ "$upper" == *"ERROR"* || "$upper" == *"FAILED"* || "$upper" == *"CANCEL"* ]]; then exit 1; fi
+            sleep 60
+          done
+          exit 1
+      - name: Recover evaluation and diagnostics
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p evaluation_download
+          kaggle kernels output "$OWNER/atml-pa4-t3-eval-$CONDITION-$SEED-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p evaluation_download || true
+      - name: Archive exact paired output metrics privately
+        if: success()
+        run: |
+          python scripts/archive_task3_eval.py --download-dir evaluation_download \
+            --condition "$CONDITION" --seed "$SEED" --github-run-id "$GITHUB_RUN_ID"
+      - name: Archive evaluation errors
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task3-eval-${{ matrix.condition }}-${{ matrix.seed }}
+          path: |
+            evaluation_submission/kernel-metadata.json
+            evaluation_download/task3_evaluation/run_manifest.json
+            evaluation_download/task3_evaluation/metrics/completed.json
+            evaluation_download/*.log
+          if-no-files-found: warn
+          retention-days: 30
