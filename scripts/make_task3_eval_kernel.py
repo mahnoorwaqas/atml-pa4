@@ -9,6 +9,7 @@ p.add_argument('--condition',required=True)
 p.add_argument('--seed',type=int,required=True)
 p.add_argument('--training-run-id',default=None)
 p.add_argument('--output',type=pathlib.Path,required=True)
+p.add_argument('--smoke',action='store_true')
 a=p.parse_args()
 if not re.fullmatch('[a-z0-9-]{3,30}',a.owner):raise ValueError('Invalid Kaggle owner')
 if not re.fullmatch('[0-9a-f]{40}',a.sha):raise ValueError('Bad source revision')
@@ -17,11 +18,12 @@ if a.condition!='original' and a.condition not in ('off','on'):
 if a.condition!='original' and (not a.training_run_id or a.seed not in (6304,6305)):
     raise ValueError('Missing completed training kernel')
 lock=json.loads(a.source_lock.read_text())
-slug=f'atml-pa4-t3-eval-{a.condition}-{a.seed}-{a.run_id}'
+slug=(f'atml-t3-eval-smoke-{a.run_id}' if a.smoke else
+      f'atml-pa4-t3-eval-{a.condition}-{a.seed}-{a.run_id}')
 if len(slug)>50:raise ValueError('Kaggle slug too long')
 training_kernel=(f'{a.owner}/atml-pa4-t3-{a.condition}-{a.seed}-{a.training_run_id}'
                  if a.condition!='original' else None)
-cfg={'sha':a.sha,'lock':lock,'condition':a.condition,'seed':a.seed,'training_kernel':training_kernel}
+cfg={'sha':a.sha,'lock':lock,'condition':a.condition,'seed':a.seed,'training_kernel':training_kernel,'smoke':a.smoke}
 code="""
 import json,pathlib,subprocess,sys,traceback,time
 cfg=json.loads(CONFIG)
@@ -53,7 +55,7 @@ try:
         draft=str(dirs[0])
     run([sys.executable,'-m','task3.evaluate','--staff',str(staff),
        '--out',str(out/'metrics'),'--draft',draft,
-       '--condition',cfg['condition'],'--seed',str(cfg['seed'])],project)
+       '--condition',cfg['condition'],'--seed',str(cfg['seed'])]+(['--smoke'] if cfg['smoke'] else []),project)
     if json.loads((out/'metrics/completed.json').read_text())['finished']!=True:
         raise RuntimeError('No completed evaluation')
     manifest['result']='success'
