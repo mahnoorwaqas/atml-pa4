@@ -54,14 +54,24 @@ def enforce_tokenizer_alignment(teacher_tok,draft_tok):
         raise RuntimeError("Target/student EOS mismatch")
 
 def rollout(model,ids,cap,eos_id,generator):
+    """Temperature-one, top-p-one seeded ancestral sampling with cached decoding.
+    Do not rely on transformers.generate(generator=), removed in newer releases.
+    """
     with torch.inference_mode():
-        sample=model.generate(ids,max_new_tokens=cap,do_sample=True,
-             temperature=1.0,top_p=1.,top_k=0,
-             pad_token_id=eos_id,eos_token_id=eos_id,
-             generator=generator,use_cache=True)
-    response=sample[0,ids.shape[1]:].tolist()
-    termination="eos" if response and response[-1]==eos_id else "cap"
-    if not response:raise RuntimeError("Empty rollout")
+        state=model(input_ids=ids,use_cache=True)
+        logits=state.logits[0,-1].float()
+        cache=state.past_key_values
+        response=[]
+        for i in range(cap):
+            probabilities=torch.softmax(logits,dim=-1)
+            next_id=int(torch.multinomial(probabilities,1,generator=generator))
+            response.append(next_id)
+            if next_id==eos_id:break
+            state=model(input_ids=torch.tensor([[next_id]],device=ids.device),
+                        past_key_values=cache,use_cache=True)
+            logits=state.logits[0,-1].float()
+            cache=state.past_key_values
+    termination="eos" if response[-1]==eos_id else "cap"
     return response,termination
 
 def cyclic_indices(size,seed,category):
@@ -70,13 +80,13 @@ def cyclic_indices(size,seed,category):
         rng.shuffle(positions)
         for index in positions:yield index
 
-def schedule(seed,sets):
+def schedule(seed,sets,quotas=QUOTAS):
     iterators={d:cyclic_indices(len(sets[d]),seed,d) for d in QUOTAS}
     used=dict.fromkeys(QUOTAS,0)
-    while any(used[d]<QUOTAS[d] for d in QUOTAS):
+    while any(used[d]<quotas[d] for d in quotas):
         # Choose most under-filled category relative to its fixed quota.
-        active=[d for d in ("math","short") if used[d]<QUOTAS[d]]
-        domain=min(active,key=lambda d:(used[d]/QUOTAS[d], d))
+        active=[d for d in ("math","short") if used[d]<quotas[d]]
+        domain=min(active,key=lambda d:(used[d]/quotas[d], d))
         source=sets[domain][next(iterators[domain])]
         used[domain]+=1
         yield domain,source
@@ -106,7 +116,9 @@ def main():
     p.add_argument("--out",type=pathlib.Path,required=True)
     p.add_argument("--method",choices=("off","on"),required=True)
     p.add_argument("--seed",type=int,choices=(6304,6305),required=True)
+    p.add_argument("--smoke",action="store_true",help="Small GPU execution/gradient test; never a final experiment")
     a=p.parse_args();a.out.mkdir(parents=True,exist_ok=True)
+    quotas={"math":256,"short":128} if a.smoke else QUOTAS
     random.seed(a.seed);np.random.seed(a.seed);torch.manual_seed(a.seed)
     torch.cuda.manual_seed_all(a.seed)
     torch.backends.cuda.matmul.allow_tf32=False
@@ -138,7 +150,7 @@ def main():
       "source_revisions":source,"adapter_parameters":adapter_count,
       "teacher_total_parameters":sum(p.numel() for p in teacher.parameters()),
       "student_total_parameters":sum(p.numel() for p in student.parameters()),
-      "quota":QUOTAS,"updates":0,"skipped_updates":0,"scored":{"math":0,"short":0},
+      "quota":quotas,"smoke":a.smoke,"updates":0,"skipped_updates":0,"scored":{"math":0,"short":0},
       "teacher_rollout_seconds":0.,"student_rollout_seconds":0.,
       "teacher_scoring_training_seconds":0.,"merge_seconds":0.,
       "train_start_unix":time.time(),"loss_records":[]}
@@ -147,17 +159,17 @@ def main():
     prepared=[]
     if a.method=="off":
         prepared_count={"math":0,"short":0}
-        for domain,record in schedule(a.seed,sets):
-            if prepared_count[domain]>=QUOTAS[domain]:continue
+        for domain,record in schedule(a.seed,sets,quotas):
+            if prepared_count[domain]>=quotas[domain]:continue
             ids=prompt_ids(tok,record["text"])
             t0=time.perf_counter()
             teacher.eval()
             response,termination=rollout(teacher,ids,CAPS[domain],tok.eos_token_id,gen)
             tracker["teacher_rollout_seconds"]+=time.perf_counter()-t0
-            allowed=min(len(response),QUOTAS[domain]-prepared_count[domain])
+            allowed=min(len(response),quotas[domain]-prepared_count[domain])
             prepared.append((domain,record,response[:allowed],termination))
             prepared_count[domain]+=allowed
-            if all(prepared_count[d]==QUOTAS[d] for d in QUOTAS):break
+            if all(prepared_count[d]==quotas[d] for d in quotas):break
         write_json(a.out/"frozen_teacher_pool_manifest.json",{
             "seed":a.seed,"pool_presentations":len(prepared),
             "scored_tokens":prepared_count})
@@ -191,19 +203,19 @@ def main():
         tokens_in_update=0;total_loss=0.
     iterator=iter(prepared) if prepared is not None else schedule(a.seed,sets)
     with log.open("w",encoding="utf8") as fout:
-        while any(tracker["scored"][d]<QUOTAS[d] for d in QUOTAS):
+        while any(tracker["scored"][d]<quotas[d] for d in quotas):
             if prepared is not None:
                 domain,record,response,termination=next(iterator)
             else:
                 domain,record=next(iterator)
-                if tracker["scored"][domain]>=QUOTAS[domain]:continue
+                if tracker["scored"][domain]>=quotas[domain]:continue
                 ids=prompt_ids(tok,record["text"])
                 student.eval()
                 t0=time.perf_counter()
                 response,termination=rollout(student,ids,CAPS[domain],tok.eos_token_id,gen)
                 tracker["student_rollout_seconds"]+=time.perf_counter()-t0
                 student.train()
-            remaining=QUOTAS[domain]-tracker["scored"][domain]
+            remaining=quotas[domain]-tracker["scored"][domain]
             if remaining<=0:continue
             permitted=response[:remaining]
             truncated=len(permitted)<len(response)
@@ -234,7 +246,7 @@ def main():
             if presentation%50==0:
                 write_json(a.out/"training_status.json",tracker)
     update()
-    if tracker["scored"]!=QUOTAS:raise RuntimeError("Token quota mismatch")
+    if tracker["scored"]!=quotas:raise RuntimeError("Token quota mismatch")
     student.save_pretrained(a.out/"adapter",safe_serialization=True)
     print("Adapter saved",a.out/"adapter",flush=True)
     # Merge adapters into a clean, independently instantiated student model.
@@ -260,6 +272,6 @@ def main():
     write_json(a.out/"training_status.json",tracker)
     write_json(a.out/"completed.json",{"finished":True,"method":a.method,"seed":a.seed,
                                       "teacher_scored_tokens":tracker["scored"]})
-    print("TASK3 TRAINING COMPLETE",a.method,a.seed,tracker["scored"],flush=True)
+    print("TASK3 TRAINING COMPLETE",a.method,a.seed,tracker["scored"],"smoke",a.smoke,flush=True)
 
 if __name__=="__main__":main()
