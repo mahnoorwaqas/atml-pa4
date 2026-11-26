@@ -1,0 +1,78 @@
+name: Recover and archive submitted Task 3 notebooks
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/task3-recover.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        include:
+          - method: off
+            seed: 6304
+          - method: off
+            seed: 6305
+          - method: on
+            seed: 6304
+          - method: on
+            seed: 6305
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      METHOD: ${{ matrix.method }}
+      SEED: ${{ matrix.seed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle/Hugging Face clients
+        run: python -m pip install kaggle six "huggingface_hub==0.36.2"
+      - name: Monitor ALREADY SUBMITTED notebook; do not push again
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="mahnoorwaqas21/atml-pa4-task-3-${METHOD}-seed-${SEED}"
+          echo "Actual submitted notebook: https://www.kaggle.com/code/$kernel"
+          for ((i=0; i<325; i++)); do
+            status="$(kaggle kernels status "$kernel" 2>&1 || true)"
+            echo "$status"
+            upper="${status^^}"
+            if [[ "$upper" == *"PERMISSION"* || "$upper" == *"CANNOT ACCESS KERNEL"* || "$upper" == *"NOT FOUND"* ]]; then exit 1; fi
+            if [[ "$upper" == *"COMPLETE"* ]]; then exit 0; fi
+            if [[ "$upper" == *"ERROR"* || "$upper" == *"FAILED"* || "$upper" == *"CANCEL"* ]]; then exit 1; fi
+            sleep 60
+          done
+          echo "Kaggle did not complete before runtime horizon" >&2
+          exit 1
+      - name: Recover actual Task 3 notebook output
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p task3_download
+          kaggle kernels output "mahnoorwaqas21/atml-pa4-task-3-${METHOD}-seed-${SEED}" -p task3_download || true
+      - name: Validate real 30k/10k quotas and archive private checkpoints
+        if: success()
+        run: |
+          python scripts/archive_task3.py --download-dir task3_download \
+            --method "$METHOD" --seed "$SEED" --github-run-id 45768153250
+      - name: Save available diagnostic metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task3-recovered-${{ matrix.method }}-${{ matrix.seed }}
+          path: |
+            task3_download/task3_results/run_manifest.json
+            task3_download/task3_results/training/training_status.json
+            task3_download/task3_results/training/completed.json
+            task3_download/*.log
+          if-no-files-found: warn
+          retention-days: 30
