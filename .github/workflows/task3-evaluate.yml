@@ -1,7 +1,7 @@
 name: Evaluate Task 3 speculative decoding on Kaggle
 on:
   workflow_run:
-    workflows: ["Reconcile manual Task 3 run and replace cancelled seed"]
+    workflows: ["Run Task 3 evaluation GPU smoke and split validation"]
     types: [completed]
   workflow_dispatch:
 permissions:
@@ -33,8 +33,8 @@ jobs:
       CONDITION: ${{ matrix.condition }}
       SEED: ${{ matrix.seed }}
       TRAIN_RUN_ID: 45773884864
-      RECOVERY_RUN_ID: ${{ github.event.workflow_run.id }}
-      TRAIN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '1' }}
+      RECOVERY_RUN_ID: 45785982970
+      TRAIN_ATTEMPT: 1
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
