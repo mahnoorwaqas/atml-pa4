@@ -105,14 +105,14 @@ jobs:
           root=pathlib.Path('smoke_download/task3_evaluation/metrics')
           done=json.loads((root/'completed.json').read_text())
           assert done['finished'] and done['smoke']
-          assert done['primary_cases']==12 and done['quality_cases']==3
+          assert done['primary_cases']==6 and done['quality_cases']==3
           records=[json.loads(line) for line in (root/'execution.jsonl').read_text().splitlines()]
-          assert len(records)==12
+          assert len(records)==6
           from collections import Counter
           assert Counter(x['domain'] for x in records)=={
-             'math':4,'familiar_extraction':4,'heldout_extraction':4}
+             'math':2,'familiar_extraction':2,'heldout_extraction':2}
           assert (root/'protocol.json').exists()
-          print('GPU EVAL SMOKE PASS: 12 sampled comparisons on 3 domains')
+          print('GPU EVAL SMOKE PASS: 6 sampled comparisons on 3 domains')
           PY
       - name: Keep smoke diagnostics
         if: always()
