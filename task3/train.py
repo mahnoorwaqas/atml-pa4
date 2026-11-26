@@ -100,7 +100,9 @@ def forward_kl(teacher,student,ids,response,offset,n):
     full=torch.cat([ids,torch.tensor([response],device="cuda")],dim=1)
     begin=ids.shape[1]-1+offset
     end=begin+n
-    with torch.inference_mode():
+    # no_grad (not inference_mode): teacher distributions are constants, but
+    # KL autograd must be able to save them for the student's backward pass.
+    with torch.no_grad():
         t_logits=teacher(full,use_cache=False).logits[:,begin:end].float()
         t_prob=t_logits.softmax(dim=-1)
     with torch.autocast(device_type="cuda",dtype=torch.float16):
