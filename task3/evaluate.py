@@ -66,12 +66,17 @@ def main():
     p.add_argument('--draft',default=DRAFT)
     p.add_argument('--condition',required=True)
     p.add_argument('--seed',type=int,required=True)
+    p.add_argument('--smoke',action='store_true',help='Execute a small GPU test, not final evaluation')
     args=p.parse_args();args.out.mkdir(parents=True,exist_ok=True)
     torch.manual_seed(6304);random.seed(6304);np.random.seed(6304)
     lock=json.loads((args.staff/'data/local_source_revisions.json').read_text())['revisions']
     tok=AutoTokenizer.from_pretrained(TARGET,revision=lock['model_target'])
     draft_tok=AutoTokenizer.from_pretrained(DRAFT,revision=lock['model_draft'])
     examples=prompt_data(args.staff)
+    if args.smoke:
+        examples=[examples[0],examples[60],examples[90]]
+    nreps=1 if args.smoke else 2
+    cap=8 if args.smoke else 64
     for example in examples[:10]:
         if not torch.equal(tokenize(tok,example['prompt']),
                            tokenize(draft_tok,example['prompt'])):
@@ -90,22 +95,23 @@ def main():
         'seed':args.seed,'condition':args.condition,
         'source_revisions':lock,'split_prefill_max_logit_error':err,
         'target_temperature':1.,'target_top_p':1.,
-        'max_new_tokens_primary':64,'gamma':[2,4],'repetitions':2,
+        'max_new_tokens_primary':cap,'gamma':[2,4],'repetitions':nreps,
+        'smoke':args.smoke,
         'gpu':torch.cuda.get_device_name(0)})
     file=args.out/'execution.jsonl'
     with file.open('w',encoding='utf8') as output:
         for idx,example in enumerate(examples):
             prompt=tokenize(tok,example['prompt'])
-            for repetition in (0,1):
+            for repetition in range(nreps):
                 for gamma in (2,4):
                     base_seed=6304+idx*7919+repetition*1009+gamma*101
                     target_rng=torch.Generator(device='cuda').manual_seed(base_seed)
                     draft_rng=torch.Generator(device='cuda').manual_seed(base_seed)
                     torch.cuda.reset_peak_memory_stats()
-                    target_tokens,tref=target_cached(target,prompt,64,tok.eos_token_id,target_rng)
+                    target_tokens,tref=target_cached(target,prompt,cap,tok.eos_token_id,target_rng)
                     target_peak=torch.cuda.max_memory_allocated()
                     torch.cuda.reset_peak_memory_stats()
-                    tokens,stats=sample_cached(target,draft,prompt,gamma,64,
+                    tokens,stats=sample_cached(target,draft,prompt,gamma,cap,
                                                tok.eos_token_id,draft_rng)
                     record={'id':example['id'],'domain':example['domain'],
                             'seed':args.seed,'condition':args.condition,
@@ -124,7 +130,7 @@ def main():
     with qfile.open('w',encoding='utf8') as out:
         for idx,example in enumerate(examples):
             prompt=tokenize(tok,example['prompt'])
-            limit=512 if example['domain']=='math' else 32
+            limit=(16 if args.smoke else (512 if example['domain']=='math' else 32))
             rng=torch.Generator(device='cuda').manual_seed(args.seed+200003+idx)
             tokens,metrics=target_cached(draft,prompt,limit,tok.eos_token_id,rng)
             decoded=tok.decode(tokens,skip_special_tokens=True)
@@ -144,7 +150,7 @@ def main():
     # 24 fixed math examples, 64 tokens even across EOS.
     diag=args.out/'math_fixed64.jsonl'
     with diag.open('w',encoding='utf8') as out:
-        for idx,ex in enumerate(examples[:24]):
+        for idx,ex in enumerate(examples[:0] if args.smoke else examples[:24]):
             prompt=tokenize(tok,ex['prompt'])
             for gamma in (2,4):
                 base=6304+idx*7919+gamma
@@ -156,7 +162,8 @@ def main():
                 out.write(json.dumps({'id':ex['id'],'gamma':gamma,
                    'speculative_metrics':metrics})+'\n')
     dump(args.out/'completed.json',{'finished':True,'condition':args.condition,
-                'seed':args.seed,'primary_cases':120*2*2,
-                'quality_cases':120,'fixed64_cases':24*2})
+                'seed':args.seed,'smoke':args.smoke,
+                'primary_cases':len(examples)*nreps*2,
+                'quality_cases':len(examples),'fixed64_cases':0 if args.smoke else 24*2})
     print('TASK3 HELD-OUT EVALUATION COMPLETE',args.condition,args.seed,flush=True)
 if __name__=='__main__':main()
