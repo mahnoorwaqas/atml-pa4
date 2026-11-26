@@ -1,4 +1,4 @@
-name: Diagnose actual Task 3 Kaggle execution failure
+name: Diagnose actual Task 3 Kaggle smoke failure
 on:
   push:
     branches: [main]
@@ -18,10 +18,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p diagnostic
-          kernel="mahnoorwaqas21/atml-pa4-task-3-off-seed-6304"
+          kernel="mahnoorwaqas21/atml-pa4-t3-smoke-off-6304-45768845934-1"
           kaggle kernels status "$kernel" || true
           kaggle kernels output "$kernel" -p diagnostic >/dev/null || true
           echo "==== Kaggle run manifest ===="
           if [[ -f diagnostic/task3_results/run_manifest.json ]]; then cat diagnostic/task3_results/run_manifest.json; fi
           echo "==== Kaggle log last 180 lines ===="
-          tail -n 180 diagnostic/atml-pa4-task-3-off-seed-6304.log || true
+          tail -n 180 diagnostic/atml-pa4-t3-smoke-off-6304-45768845934-1.log || true
