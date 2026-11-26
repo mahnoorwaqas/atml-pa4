@@ -1,0 +1,129 @@
+name: Run Task 3 evaluation GPU smoke and split validation
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/task3-eval-smoke.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate-splits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate 60 held-out short prompts and independent split labels
+        run: |
+          python - <<'PY'
+          import collections,io,json,urllib.request
+          url='https://raw.githubusercontent.com/AbDu11aHHH/atml-pa4-datasets/main/data/short_form/'
+          def read(name):
+              with urllib.request.urlopen(url+name,timeout=25) as r:
+                  return [json.loads(line) for line in r.read().decode('utf8').splitlines() if line.strip()]
+          train=read('short_train.jsonl')
+          test=read('short_test.jsonl')
+          counts=collections.Counter(r['split'] for r in test)
+          assert len(train)==300 and len(test)==60
+          assert counts=={'familiar':30,'shifted':30},counts
+          assert all(r['family'] in (0,1,2) for r in test)
+          assert {r['family'] for r in test if r['split']=='familiar'}=={0,1,2}
+          assert {r['family'] for r in test if r['split']=='shifted'}=={0,1,2}
+          from pathlib import Path
+          src=Path('task3/evaluate.py').read_text()
+          assert "r['split']=='familiar'" in src
+          assert "r['family'] in fam" not in src
+          print('VALIDATED: 300 training, 60 test, 30 familiar, 30 shifted; both share family IDs 0,1,2')
+          PY
+      - name: Syntax validation for evaluation and cached sampler
+        run: python -m py_compile task3/evaluate.py task3/fast_sampler.py scripts/make_task3_eval_kernel.py
+  gpu-smoke:
+    needs: validate-splits
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      OWNER: mahnoorwaqas21
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle and HF clients
+        run: python -m pip install kaggle six "huggingface_hub==0.36.2"
+      - name: Pin original source revisions
+        run: |
+          python scripts/fetch_baseline_lock.py --run-id 45352560465 \
+            --attempt 1 --output source_revisions.json
+      - name: Prepare original-draft 3-domain GPU smoke notebook
+        run: |
+          python scripts/make_task3_eval_kernel.py --owner "$OWNER" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --sha "$GITHUB_SHA" --source-lock source_revisions.json \
+            --condition original --seed 6304 --smoke --output evaluation_submission
+          python - <<'PY'
+          import ast,json
+          nb=json.load(open('evaluation_submission/kernel.ipynb'))
+          ast.parse(''.join(nb['cells'][0]['source']))
+          m=json.load(open('evaluation_submission/kernel-metadata.json'))
+          assert m['is_private'] and m['enable_gpu'] and 'smoke' in m['id']
+          print('VALIDATED Kaggle metadata:',m['id'])
+          PY
+      - name: Push one smoke notebook to Kaggle
+        run: kaggle kernels push -p evaluation_submission
+      - name: Monitor real GPU evaluation smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$OWNER/atml-t3-eval-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Smoke notebook https://www.kaggle.com/code/$kernel"
+          for ((i=0;i<105;i++)); do
+            status="$(kaggle kernels status "$kernel" 2>&1 || true)"
+            echo "$status"
+            upper="${status^^}"
+            if [[ "$upper" == *"COMPLETE"* ]]; then exit 0; fi
+            if [[ "$upper" == *"ERROR"* || "$upper" == *"FAILED"* || "$upper" == *"CANCEL"* || "$upper" == *"PERMISSION"* || "$upper" == *"NOT FOUND"* ]]; then exit 1; fi
+            sleep 60
+          done
+          exit 1
+      - name: Retrieve Kaggle smoke metrics and any error logs
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p smoke_download
+          kaggle kernels output "$OWNER/atml-t3-eval-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p smoke_download || true
+          if [ -f smoke_download/task3_evaluation/run_manifest.json ]; then cat smoke_download/task3_evaluation/run_manifest.json; fi
+      - name: Verify actual GPU smoke output counts
+        if: success()
+        run: |
+          python - <<'PY'
+          import json,pathlib
+          root=pathlib.Path('smoke_download/task3_evaluation/metrics')
+          done=json.loads((root/'completed.json').read_text())
+          assert done['finished'] and done['smoke']
+          assert done['primary_cases']==12 and done['quality_cases']==3
+          records=[json.loads(line) for line in (root/'execution.jsonl').read_text().splitlines()]
+          assert len(records)==12
+          from collections import Counter
+          assert Counter(x['domain'] for x in records)=={
+             'math':4,'familiar_extraction':4,'heldout_extraction':4}
+          assert (root/'protocol.json').exists()
+          print('GPU EVAL SMOKE PASS: 12 sampled comparisons on 3 domains')
+          PY
+      - name: Keep smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task3-eval-smoke-${{ github.run_id }}
+          path: |
+            evaluation_submission/kernel-metadata.json
+            smoke_download/task3_evaluation/run_manifest.json
+            smoke_download/task3_evaluation/metrics/completed.json
+            smoke_download/task3_evaluation/metrics/protocol.json
+            smoke_download/*.log
+          if-no-files-found: warn
+          retention-days: 30
