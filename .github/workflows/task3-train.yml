@@ -1,0 +1,102 @@
+name: Run Task 3 LoRA distillation on Kaggle
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/task3-train.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - method: off
+            seed: 6304
+          - method: off
+            seed: 6305
+          - method: on
+            seed: 6304
+          - method: on
+            seed: 6305
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      OWNER: mahnoorwaqas21
+      METHOD: ${{ matrix.method }}
+      SEED: ${{ matrix.seed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify credentials
+        run: |
+          test -n "$HF_TOKEN"
+          test -n "$KAGGLE_API_TOKEN"
+      - name: Install Kaggle CLI and lock retrieval
+        run: python -m pip install "huggingface_hub==0.36.2" kaggle six
+      - name: Lock target, draft, and GSM8K to completed Task 1 source revisions
+        run: |
+          python scripts/fetch_baseline_lock.py --run-id 45352560465 \
+            --attempt 1 --output task3_source_revisions.json
+      - name: Generate exact fixed-quota private Kaggle training notebook
+        run: |
+          python -m py_compile task3/train.py task3/sampler.py scripts/make_task3_kernel.py
+          python scripts/make_task3_kernel.py --owner "$OWNER" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --sha "$GITHUB_SHA" --source-lock task3_source_revisions.json \
+            --method "$METHOD" --seed "$SEED" --output task3_submission
+          python -m json.tool task3_submission/kernel-metadata.json > /dev/null
+          python -m json.tool task3_submission/kernel.ipynb > /dev/null
+      - name: Submit Task 3 distillation to Kaggle
+        run: kaggle kernels push -p task3_submission
+      - name: Check Kaggle completion and fail on cancellation
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$OWNER/atml-pa4-t3-$METHOD-$SEED-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Kaggle notebook: https://www.kaggle.com/code/$kernel"
+          for ((i=0;i<325;i++)); do
+            status="$(kaggle kernels status "$kernel" 2>&1 || true)"
+            echo "$status"
+            upper="${status^^}"
+            if [[ "$upper" == *"PERMISSION"* || "$upper" == *"CANNOT ACCESS KERNEL"* || "$upper" == *"NOT FOUND"* ]]; then
+              exit 1
+            fi
+            if [[ "$upper" == *"COMPLETE"* ]]; then exit 0; fi
+            if [[ "$upper" == *"ERROR"* || "$upper" == *"FAILED"* || "$upper" == *"CANCEL"* ]]; then exit 1; fi
+            sleep 60
+          done
+          echo "Task 3 Kaggle runtime exceeded polling horizon" >&2
+          exit 1
+      - name: Retrieve training outputs and merged checkpoints
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p task3_download
+          kaggle kernels output "$OWNER/atml-pa4-t3-$METHOD-$SEED-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p task3_download || true
+      - name: Validate quotas and archive adapters and merged weights privately
+        if: success()
+        run: |
+          python scripts/archive_task3.py --download-dir task3_download \
+            --method "$METHOD" --seed "$SEED" \
+            --github-run-id "$GITHUB_RUN_ID"
+      - name: Save log and execution metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task3-${{ matrix.method }}-${{ matrix.seed }}-${{ github.run_id }}
+          path: |
+            task3_submission/kernel-metadata.json
+            task3_download/task3_results/run_manifest.json
+            task3_download/task3_results/training/training_status.json
+            task3_download/task3_results/training/completed.json
+            task3_download/*.log
+          if-no-files-found: warn
+          retention-days: 30
