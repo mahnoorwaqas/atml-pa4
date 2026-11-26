@@ -19,6 +19,7 @@ def sample_cached(target,draft,prompt_ids,gamma,max_new_tokens,eos_id,generator)
     sync();prefill_seconds=time.perf_counter()-t0
     tokens=[]
     stats=dict(proposed=0,examined=0,accepted=0,target_passes=0,
+        target_verification_passes=0,target_decode_forwards=0,
         draft_forwards=0,rounds=0,bonus_rounds=0,
         accepted_prefix=[],proposal_seconds=0.,verification_seconds=0.,
         sampling_seconds=0.,rollback_seconds=0.,prefill_seconds=prefill_seconds,
@@ -46,6 +47,7 @@ def sample_cached(target,draft,prompt_ids,gamma,max_new_tokens,eos_id,generator)
         for j in range(len(proposals)):
             trows.append(torch.softmax(verified.logits[0,j].float(),dim=-1))
         stats['target_passes']+=1
+        stats['target_verification_passes']+=1
         sync();stats['verification_seconds']+=time.perf_counter()-phase
         sync();phase=time.perf_counter()
         def uniform():return float(torch.rand((),generator=generator,device=prompt_ids.device))
@@ -71,6 +73,8 @@ def sample_cached(target,draft,prompt_ids,gamma,max_new_tokens,eos_id,generator)
             bonus=chosen[-1]
             target_next,target_cache=forward(target,
                 torch.tensor([[bonus]],device=prompt_ids.device),target_cache)
+            stats['target_passes']+=1
+            stats['target_decode_forwards']+=1
             # Draft cache holds k-1 proposals (last proposed token not fed).
             draft_next,draft_cache=forward(draft,
                 torch.tensor([[proposals[-1],bonus]],device=prompt_ids.device),draft_cache)
@@ -87,6 +91,8 @@ def sample_cached(target,draft,prompt_ids,gamma,max_new_tokens,eos_id,generator)
                 raise RuntimeError('Cache position inconsistent after rejection')
             target_next,target_cache=forward(target,
                 torch.tensor([[residual]],device=prompt_ids.device),target_cache)
+            stats['target_passes']+=1
+            stats['target_decode_forwards']+=1
             draft_next,draft_cache=forward(draft,
                 torch.tensor([[residual]],device=prompt_ids.device),draft_cache)
             stats['draft_forwards']+=1
