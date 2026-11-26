@@ -1,0 +1,94 @@
+name: Run PA4 Task 3 GPU smoke test
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/task3-smoke.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gpu-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      OWNER: mahnoorwaqas21
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install kaggle six "huggingface_hub==0.36.2"
+      - name: Reuse immutable Task 1 model/dataset source commits
+        run: |
+          python scripts/fetch_baseline_lock.py --run-id 45352560465 \
+            --attempt 1 --output task3_source_revisions.json
+      - name: Generate private Task 3 smoke notebook
+        run: |
+          python -m py_compile task3/train.py scripts/make_task3_kernel.py
+          python scripts/make_task3_kernel.py --owner "$OWNER" \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --sha "$GITHUB_SHA" --source-lock task3_source_revisions.json \
+            --method off --seed 6304 --smoke --output smoke_submission
+          python - <<'PY'
+          import ast,json
+          nb=json.load(open('smoke_submission/kernel.ipynb'))
+          ast.parse(''.join(nb['cells'][0]['source']))
+          meta=json.load(open('smoke_submission/kernel-metadata.json'))
+          assert meta['is_private'] and meta['enable_gpu']
+          assert 'smoke' in meta['id']
+          PY
+      - name: Submit isolated 384-token GPU correctness smoke
+        run: kaggle kernels push -p smoke_submission
+      - name: Wait for finished gradient and LoRA merge test
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$OWNER/atml-pa4-t3-smoke-off-6304-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Kaggle smoke notebook: https://www.kaggle.com/code/$kernel"
+          for ((i=0;i<95;i++)); do
+            state="$(kaggle kernels status "$kernel" 2>&1 || true)"
+            echo "$state"
+            upper="${state^^}"
+            if [[ "$upper" == *"PERMISSION"* || "$upper" == *"NOT FOUND"* || "$upper" == *"CANNOT ACCESS"* ]]; then exit 1; fi
+            if [[ "$upper" == *"COMPLETE"* ]]; then exit 0; fi
+            if [[ "$upper" == *"ERROR"* || "$upper" == *"FAILED"* || "$upper" == *"CANCEL"* ]]; then exit 1; fi
+            sleep 60
+          done
+          exit 1
+      - name: Retrieve diagnostic output
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p smoke_download
+          kaggle kernels output "$OWNER/atml-pa4-t3-smoke-off-6304-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" -p smoke_download || true
+          if [[ -f smoke_download/task3_results/run_manifest.json ]]; then
+            cat smoke_download/task3_results/run_manifest.json
+          fi
+      - name: Verify smoke forward-KL updates and finite merge error
+        if: success()
+        run: |
+          python - <<'PY'
+          import json,math,pathlib
+          root=pathlib.Path('smoke_download/task3_results/training')
+          status=json.loads((root/'training_status.json').read_text())
+          finished=json.loads((root/'completed.json').read_text())
+          assert finished['finished'] and status['smoke']
+          assert status['scored']=={'math':256,'short':128}
+          assert status['updates']>0 and not status['skipped_updates']
+          assert math.isfinite(status['merged_logit_max_abs_error'])
+          print('GPU smoke PASS',status['scored'],status['updates'],status['merged_logit_max_abs_error'])
+          PY
+      - name: Save smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task3-smoke-${{ github.run_id }}
+          path: |
+            smoke_download/task3_results/run_manifest.json
+            smoke_download/task3_results/training/training_status.json
+            smoke_download/task3_results/training/completed.json
+            smoke_download/*.log
+          if-no-files-found: warn
+          retention-days: 30
