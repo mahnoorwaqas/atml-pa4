@@ -1,0 +1,58 @@
+name: Audit Task 1 numerical outcomes
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/task1-audit.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install "huggingface_hub==0.36.2"
+      - name: Download archived summary and inspect actual outcomes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os,csv,json
+          from huggingface_hub import HfApi,hf_hub_download
+          repo='mahnoorwaqas/atml-pa4-results'
+          api=HfApi(token=os.environ['HF_TOKEN'])
+          prefix='task1/analyses/github-run-45498523685/'
+          all_files=api.list_repo_files(repo,repo_type='dataset')
+          def get(rel):
+              f=prefix+rel
+              if f not in all_files: raise RuntimeError('Missing '+f)
+              return hf_hub_download(repo_id=repo,repo_type='dataset',filename=f,token=os.environ['HF_TOKEN'])
+          print('=== 18 EXPERIMENT SUMMARY ===')
+          with open(get('summary.csv')) as f:
+              rows=list(csv.DictReader(f))
+          print('fields=',list(rows[0]))
+          for row in rows:
+              cols=['condition','wiki_ppl','c4_ppl','hs_n','hs_acc','hs_acc_norm','eligible_sparsity','total_packed_bytes','calibration_seconds','compression_seconds']
+              print(json.dumps({key:row.get(key) for key in cols}))
+          print('=== PAIRED CONFIDENCE INTERVALS ===')
+          print(open(get('paired_bootstrap.json')).read())
+          print('=== SENSITIVITY ALLOCATION DIAGNOSTIC ===')
+          for name in ('adaptive50','adaptive75','mixed3','mixed4'):
+              f=prefix+name+'_sensitivity_allocation.json'
+              if f not in all_files: continue
+              d=json.load(open(get(name+'_sensitivity_allocation.json')))
+              for key,value in d.items():
+                  if isinstance(value,dict):
+                      vals=list(value.values())
+                      if all(isinstance(v,(int,float)) for v in vals):
+                          print(name,key,'count',len(vals),'min',min(vals),'max',max(vals))
+                      elif all(isinstance(v,dict) for v in vals):
+                          print(name,key,'count',len(vals),'sample',list(value.items())[:2])
+                      else:print(name,key,'count',len(vals))
+                  else:print(name,key,value)
+          PY
