@@ -22,6 +22,39 @@ def bootstrap_ci(values,reps=2000,seed=6304):
     boot=vals[ix].mean(axis=1)
     return [float(np.quantile(boot,.025)),float(np.quantile(boot,.975))]
 
+def projected_cost_model(gamma,accepted,examined,target_seconds,
+                         target_output_tokens,proposal_seconds,proposed,
+                         verification_seconds,rounds,overhead_seconds):
+    """Timing-derived approximation; see assumptions in returned metadata."""
+    alpha=accepted/max(examined,1)
+    target_per_token=target_seconds/max(target_output_tokens,1)
+    draft_per_proposal=proposal_seconds/max(proposed,1)
+    verify_per_round=verification_seconds/max(rounds,1)
+    overhead_per_round=overhead_seconds/max(rounds,1)
+    c=draft_per_proposal/max(target_per_token,1e-12)
+    v=verify_per_round/max(target_per_token,1e-12)
+    h=overhead_per_round/max(target_per_token,1e-12)
+    denominator=gamma*c+v+h
+    def modeled(a):
+        return sum(a**j for j in range(gamma+1))/max(denominator,1e-12)
+    if modeled(0.)>=1.:threshold=0.
+    elif modeled(1.)<1.:threshold=None
+    else:
+        lo,hi=0.,1.
+        for _ in range(45):
+            m=(lo+hi)/2
+            if modeled(m)>=1.:hi=m
+            else:lo=m
+        threshold=hi
+    return {
+      'c_proposal_to_target_token_estimate':c,
+      'v_gamma_verification_to_target_token_estimate':v,
+      'host_and_cache_overhead_to_target_token_estimate':h,
+      'projected_speedup_from_empirical_alpha':modeled(alpha),
+      'break_even_alpha_estimate':threshold,
+      'assumptions':'Independent per-proposal alpha, no EOS; draft cost from observed proposal phase (not isolated model cost); not an exact performance prediction',
+    }
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--evaluation-run-id',required=True)
@@ -90,7 +123,18 @@ def main():
             targetpasses=sum(x['speculative']['target_passes'] for x in recs)
             target_baseline=sum(x['target_reference']['decode_seconds'] for x in recs)
             speculative_total=sum(x['speculative']['decode_seconds'] for x in recs)
+            target_output_tokens=sum(len(x['target_output_ids']) for x in recs)
+            proposal_seconds=sum(x['speculative']['proposal_seconds'] for x in recs)
+            verification_seconds=sum(x['speculative']['verification_seconds'] for x in recs)
+            overhead_seconds=sum(
+                x['speculative']['sampling_seconds']+x['speculative']['rollback_seconds']
+                for x in recs)
+            cost=projected_cost_model(gamma,accepted,examined,target_baseline,
+                target_output_tokens,proposal_seconds,proposed,
+                verification_seconds,sum(x['speculative']['rounds'] for x in recs),
+                overhead_seconds)
             metrics={
+               'cost_projection':cost,
                'paired_ratio_mean':float(np.mean(ratios)),
                'paired_ratio_prompt_bootstrap95':bootstrap_ci(ratios,seed=6304+gamma),
                'accepted_over_examined':accepted/max(examined,1),
@@ -130,7 +174,18 @@ def main():
     for key,item in summary['conditions'].items():
         q=item['quality']
         lines.append(f'| {key} | {q["math"]["accuracy"]:.3f} | {q["familiar_extraction"]["accuracy"]:.3f} | {q["heldout_extraction"]["accuracy"]:.3f} |')
-    lines+=['','## Interpretation guardrails','',
+    lines+=['','## Model-projected versus measured cost (approximate)','',
+            '| Condition | Gamma | Estimated c | Estimated v_gamma | Projected speedup | Break-even alpha |',
+            '|---|---:|---:|---:|---:|---:|']
+    for condition,seed in CONDITIONS:
+        key=f'{condition}_{seed}'
+        for gamma in (2,4):
+            x=summary['conditions'][key]['gamma'][str(gamma)]['cost_projection']
+            threshold=x['break_even_alpha_estimate']
+            label='none' if threshold is None else f'{threshold:.3f}'
+            lines.append(f'| {key} | {gamma} | {x["c_proposal_to_target_token_estimate"]:.3f} | {x["v_gamma_verification_to_target_token_estimate"]:.3f} | {x["projected_speedup_from_empirical_alpha"]:.3f}× | {label} |')
+    lines+=['','These are timing-derived approximations, not isolated operator benchmarks. They assume independent proposal acceptance and no EOS.', '',
+            '## Interpretation guardrails','',
       '- The experiment uses finite-sample throughput estimates; performance superiority is not guaranteed.',
       '- The above evaluation does not yet constitute the required fixed-bank forward/reverse-KL and TV evidence.',
       '- Packed prompt counts, generation EOS and checkpoint path are verified before reporting.',
